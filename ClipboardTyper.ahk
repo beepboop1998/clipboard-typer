@@ -1,7 +1,8 @@
 /*
     ClipboardTyper.ahk
-    Responsibility: Types the clipboard into the clicked window as paced keystrokes, for remote
-                    consoles and VMs with no clipboard (VM consoles, iLO/iDRAC, noVNC, BeyondTrust PRA).
+    Responsibility: Pastes into windows that block paste by typing the clipboard as real keystrokes:
+                    remote-support sessions (BeyondTrust / Bomgar), VM consoles (VMware, Proxmox/noVNC,
+                    Hyper-V), server consoles (iLO, iDRAC, KVM-over-IP), and RDP with clipboard turned off.
     Dependencies: none (standalone; single file on purpose so it can be dropped anywhere and run)
     Author: reuben
     Version: see VERSION below

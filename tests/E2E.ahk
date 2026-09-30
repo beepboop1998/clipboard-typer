@@ -4,7 +4,7 @@
                     and checks what lands in the TestTarget windows.
     Dependencies: a running ClipboardTyper, TestTarget windows "CT_Target" and "CT_Other"
     Author: reuben
-    Usage: E2E.ahk <results file> <label>   (started by RunTests.ahk)
+    Usage: E2E.ahk <results file> <label>   (started by RunTests.ahk; label "Step" runs the step-mode suite)
     NOTE: SendLevel 1 so ClipboardTyper's hook hotkeys (*~LButton, *Esc) treat this input like a person's.
           Saves and restores the clipboard, mouse position and CapsLock state.
 */
@@ -27,7 +27,11 @@ if !WinWait("CT_Target", , 5) || !WinWait("CT_Other", , 5) {
     ExitApp(1)
 }
 try {
-    RunSuite()
+    if label = "Step" {
+        RunStepSuite()
+    } else {
+        RunSuite()
+    }
 } catch Error as e {
     Out("FAIL harness error: " . e.Message . " (line " . e.Line . ")")
     failCount += 1
@@ -121,6 +125,62 @@ RunSuite() {
     ClickIn("CT_Target")
     got := WaitIdle("CT_Target")
     Check("T8 10s timeout; a late click types nothing", got == "", "got=" . Show(got))
+}
+
+; Step mode (the typer copy runs with STEP_MODE := true): each press types the next line into the focused field.
+; NOTE: holding the hotkey (auto-repeat) can't be simulated here, because injected keys never count as
+;       physically held; that check needs a person.
+RunStepSuite() {
+    list := "alpha`r`n`r`nbeta+1`r`ngamma{x}`r`n"
+
+    ; S1 three presses type the three lines literally, each replacing the last; press 4 types nothing
+    Clear()
+    SetClip(list)
+    got1 := StepPress()
+    got2 := StepPress()
+    got3 := StepPress()
+    got4 := StepPress()
+    Check("S1 presses 1-3 type alpha, beta+1, gamma{x}, each replacing the last", got1 == "alpha" && got2 == "beta+1" && got3 == "gamma{x}", Show(got1) . " / " . Show(got2) . " / " . Show(got3))
+    ; NOTE: the "End of list (3/3)" wording is checked in Unit.ahk; tooltip text can't be read from another process
+    Check("S1 press 4 types nothing", got4 == "gamma{x}", "field=" . Show(got4))
+
+    ; S2 copying the list again restarts at line 1
+    SetClip(list)
+    got := StepPress()
+    Check("S2 copying again restarts at line 1", got == "alpha", "got=" . Show(got))
+
+    ; S3 a single line retypes on every press
+    SetClip("delta")
+    results := ""
+    Loop 3 {
+        results .= StepPress() . "|"
+    }
+    Check("S3 single line types delta on every press", results == "delta|delta|delta|", "got=" . Show(results))
+
+    ; S6 a two-column sheet copy types only the first column
+    SetClip("cam01`tsite A`r`ncam02`tsite B`r`n")
+    got := StepPress()
+    Check("S6 two-column copy types only the first column", got == "cam01", "got=" . Show(got))
+
+    ; S8 an empty clipboard types nothing
+    Clear()
+    SetClip("")
+    got := StepPress()
+    Check("S8 empty clipboard types nothing", got == "", "got=" . Show(got))
+}
+
+; Focuses the target field, presses the hotkey once, and returns the field's text when typing has settled.
+StepPress() {
+    WinActivate("CT_Target")
+    WinWaitActive("CT_Target", , 2)
+    ControlFocus("Edit1", "CT_Target")
+    Send("^+!v")
+    return WaitIdle("CT_Target")
+}
+
+SetClip(clipText) {
+    A_Clipboard := clipText
+    Sleep(200)  ; let the typer's OnClipboardChange run before the next press
 }
 
 ; --- Helpers ---

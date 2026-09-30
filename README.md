@@ -30,6 +30,19 @@ Before you click, a tooltip shows how many characters it will type and how many 
 
 The tray icon's **How to use** item shows these steps inside the app.
 
+## Step mode: one line per press
+
+Use this to type a list one item at a time, such as names copied from a spreadsheet into a search box. Right-click the tray icon and tick **Step mode (one line per press)**. Then each press of **Ctrl+Shift+Alt+V**:
+
+- selects the text in the field that has focus (Ctrl+A) and types the next line in its place. There's no click step.
+- shows which item it typed, like `2/3: camera-02`.
+
+After the last line it shows "End of list" and types nothing. Copy anything to start again at line 1. A clipboard with a single line types that line on every press.
+
+Blank lines are skipped, and from a multi-column spreadsheet copy only the first column is typed. Step mode never presses Enter, Tab, Delete or Backspace. Because it presses Ctrl+A first, make sure a text field has focus. Set `STEP_SELECT_ALL_FIRST` to `false` to type without selecting first.
+
+While step mode is on, the tray menu's **Type clipboard** still types the whole clipboard.
+
 ## Good to know
 
 - **Line breaks press Enter and tabs press Tab.** In a terminal, every line runs as a command and a tab triggers auto-complete. A single trailing line break, like the one Excel adds to a copied cell, is dropped so one value doesn't press Enter.
@@ -50,6 +63,9 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Edit them in an
 | `CLICK_TIMEOUT_SEC` | `10` | How long it waits for your click |
 | `FOCUS_SETTLE_MS` | `300` | Pause between your click and the first keystroke, so the field can take focus |
 | `SHOW_STARTUP_TIP` | `true` | Set to `false` to hide the notification at launch, for example if it runs at Windows startup |
+| `STEP_MODE` | `false` | Start with step mode on. You can switch it any time from the tray menu |
+| `STEP_SELECT_ALL_FIRST` | `true` | In step mode, press Ctrl+A before typing so each line replaces the field's text |
+| `STEP_STATUS_MS` | `1500` | How long the step-mode status (`2/3: item`) stays on screen |
 
 ## Troubleshooting
 
@@ -72,7 +88,7 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Edit them in an
 
 ## Running the tests
 
-Double-click `tests/RunTests.ahk`. It runs unit checks, then drives your mouse and keyboard for about 3 minutes against two test windows, in both send modes. Don't touch them until the results appear. Results go to `tests/results.txt`. Close any running Clipboard Typer first; the runner checks for this.
+Double-click `tests/RunTests.ahk`. It runs unit checks, then drives your mouse and keyboard for about 3 minutes against two test windows, in both send modes and in step mode. Don't touch them until the results appear. Results go to `tests/results.txt`. Close any running Clipboard Typer first; the runner checks for this.
 
 ## License
 

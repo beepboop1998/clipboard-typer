@@ -1,7 +1,7 @@
 /*
     RunTests.ahk
-    Responsibility: Runs Unit.ahk, then E2E.ahk against copies of ClipboardTyper.ahk in Raw and Text mode,
-                    and writes everything to tests\results.txt.
+    Responsibility: Runs Unit.ahk, then E2E.ahk against copies of ClipboardTyper.ahk in Raw mode, Text mode
+                    and step mode, and writes everything to tests\results.txt.
     Dependencies: Unit.ahk, E2E.ahk, TestTarget.ahk, LeakProbe.ahk (optional), ..\ClipboardTyper.ahk
     Author: reuben
     Usage: double-click. Arguments (optional, any order):
@@ -44,7 +44,7 @@ try FileDelete(workDir . "\error.log")
 RunWait('"' . ahk . '" "' . A_ScriptDir . '\Unit.ahk" "' . resultsFile . '"')
 
 source := FileRead(scriptPath, "UTF-8")
-for mode in ["Raw", "Text"] {
+for mode in ["Raw", "Text", "Step"] {
     copyPath := MakeTestCopy(source, mode)
     if copyPath = "" {
         continue  ; MakeTestCopy already logged the FAIL
@@ -80,12 +80,16 @@ Out("== SUMMARY pass=" . passes . " fail=" . fails)
 Finish("Passed: " . passes . "   Failed: " . fails . "`n`nDetails: tests\results.txt", fails)
 
 
-; Writes a copy of the script with the given SEND_MODE and no startup notification. Returns its path, or "" on failure.
+; Writes a copy of the script for one test pass, with no startup notification. Returns its path, or "" on failure.
+; "Raw" and "Text" set SEND_MODE with step mode off; "Step" uses Raw with step mode on.
 MakeTestCopy(source, mode) {
-    copy := RegExReplace(source, 'm)^SEND_MODE := "\w+"', 'SEND_MODE := "' . mode . '"', &modeHits)
+    sendMode := mode = "Step" ? "Raw" : mode
+    stepMode := mode = "Step" ? "true" : "false"
+    copy := RegExReplace(source, 'm)^SEND_MODE := "\w+"', 'SEND_MODE := "' . sendMode . '"', &modeHits)
     copy := RegExReplace(copy, "m)^SHOW_STARTUP_TIP := \w+", "SHOW_STARTUP_TIP := false", &tipHits)
-    if modeHits != 1 || tipHits != 1 {
-        Out("FAIL could not set SEND_MODE/SHOW_STARTUP_TIP in the test copy (settings lines renamed?)")
+    copy := RegExReplace(copy, "m)^STEP_MODE := \w+", "STEP_MODE := " . stepMode, &stepHits)
+    if modeHits != 1 || tipHits != 1 || stepHits != 1 {
+        Out("FAIL could not set SEND_MODE/SHOW_STARTUP_TIP/STEP_MODE in the test copy (settings lines renamed?)")
         return ""
     }
     copyPath := workDir . "\ClipboardTyper.test-" . mode . ".ahk"

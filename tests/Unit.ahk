@@ -62,6 +62,11 @@ Check("step past the end says End of list (3/3)", InStr(lastNotice, "End of list
 typer._lines := []
 typer.TypeNextLine("")
 Check("step with no lines says Clipboard has no text", lastNotice, "Clipboard has no text")
+typer._lines := ["short", StrReplace(Format("{:" . (MAX_CHARS + 1) . "}", ""), " ", "x"), "next"]
+typer._index := 2
+Check("step line over MAX_CHARS types nothing", typer.TypeNextLine("") ? "typed" : "nothing", "nothing")
+Check("step line over MAX_CHARS says skipped", InStr(lastNotice, "is " . (MAX_CHARS + 1) . " chars (max " . MAX_CHARS . "); skipped") ? "yes" : "no: " . lastNotice, "yes")
+Check("step line over MAX_CHARS moves to the next line", typer._index, 3)
 typer.DeleteProp("_Notify")
 typer._needsReload := true
 

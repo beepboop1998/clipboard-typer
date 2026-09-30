@@ -39,7 +39,7 @@ Use this to type a list one item at a time, such as names copied from a spreadsh
 
 After the last line it shows "End of list" and types nothing. Copy anything to start again at line 1. A clipboard with a single line types that line on every press.
 
-Blank lines are skipped, and from a multi-column spreadsheet copy only the first column is typed. Step mode never presses Enter, Tab, Delete or Backspace. Because it presses Ctrl+A first, make sure a text field has focus. Set `STEP_SELECT_ALL_FIRST` to `false` to type without selecting first.
+Blank lines are skipped, and from a multi-column spreadsheet copy only the first column is typed. A line longer than `MAX_CHARS` is skipped with a message instead of typed. Step mode never presses Enter, Tab, Delete or Backspace. Because it presses Ctrl+A first, make sure a text field has focus. Set `STEP_SELECT_ALL_FIRST` to `false` to type without selecting first.
 
 While step mode is on, the tray menu's **Type clipboard** still types the whole clipboard.
 
@@ -59,7 +59,7 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Edit them in an
 | `SEND_MODE` | `"Raw"` | `"Raw"` sends real key presses and works in most remote consoles. `"Text"` sends Unicode characters and ignores keyboard layout, but many remote consoles ignore it |
 | `KEY_DELAY_MS` | `20` | Pause after each keystroke. Raise it to 40–50 if characters go missing |
 | `KEY_PRESS_MS` | `10` | How long each key is held down |
-| `MAX_CHARS` | `2000` | Longer clipboards are refused |
+| `MAX_CHARS` | `2000` | Longer clipboards are refused. In step mode, longer lines are skipped |
 | `CLICK_TIMEOUT_SEC` | `10` | How long it waits for your click |
 | `FOCUS_SETTLE_MS` | `300` | Pause between your click and the first keystroke, so the field can take focus |
 | `SHOW_STARTUP_TIP` | `true` | Set to `false` to hide the notification at launch, for example if it runs at Windows startup |

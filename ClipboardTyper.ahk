@@ -337,6 +337,14 @@ class ClipboardTyper {
                 return false
             }
             item := this._lines[this._index]
+            ; NOTE: checked before Ctrl+A; stepping has no click/Esc stop, so a huge line must never start
+            if StrLen(item) > this._maxChars {
+                this._Notify("Line " . this._index . "/" . total . " is " . StrLen(item) . " chars (max " . this._maxChars . "); skipped")
+                if total > 1 {
+                    this._index += 1  ; NOTE: move past it so the rest of the list stays reachable
+                }
+                return false
+            }
             if this._stepSelectAllFirst && !this._inputSender.Send("^a") {
                 this._Notify("Send failed (see error.log)")
                 return false

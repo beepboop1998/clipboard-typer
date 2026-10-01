@@ -51,6 +51,18 @@ Check("tray tip shows step mode", InStr(A_IconTip, " - step mode") ? "yes" : "no
 OnStepMenu(STEP_MENU_ITEM)
 Check("tray toggle turns step mode off", typer.IsStepMode() ? "on" : "off", "off")
 
+; Step status hides the typed text unless Show typed text is on (passwords stay off screen)
+Check("show typed text matches STEP_SHOW_TEXT at start", typer.IsShowingStepText() ? "on" : "off", STEP_SHOW_TEXT ? "on" : "off")
+Check("status with text hidden", typer._StepStatus(2, 5, "hunter2"), "2/5 typed")
+OnShowTextMenu(SHOW_TEXT_MENU_ITEM)
+Check("tray toggle shows typed text", typer.IsShowingStepText() ? "on" : "off", "on")
+Check("status with text shown", typer._StepStatus(2, 5, "camera-02"), "2/5: camera-02")
+OnStepMenu(STEP_MENU_ITEM)
+Check("tray tip says typed text is shown", InStr(A_IconTip, "step mode, shows typed text") ? "yes" : "no: " . A_IconTip, "yes")
+OnStepMenu(STEP_MENU_ITEM)
+OnShowTextMenu(SHOW_TEXT_MENU_ITEM)
+Check("tray toggle hides typed text again", typer.IsShowingStepText() ? "on" : "off", "off")
+
 ; Step mode messages for the paths that type nothing, with _Notify swapped for a spy
 lastNotice := ""
 typer.DefineProp("_Notify", {Call: SpyNotify})
@@ -93,6 +105,7 @@ GrabHelp() {
     Check("help mentions the hotkey", InStr(text, DescribeHotkey(HOTKEY_TYPE_CLIPBOARD)) ? "yes" : "no", "yes")
     Check("help mentions the limit", InStr(text, MAX_CHARS . " characters") ? "yes" : "no", "yes")
     Check("help explains step mode", InStr(text, "Step mode") ? "yes" : "no", "yes")
+    Check("help mentions Show typed text", InStr(text, "Show typed text") ? "yes" : "no", "yes")
 }
 
 Out(line) {

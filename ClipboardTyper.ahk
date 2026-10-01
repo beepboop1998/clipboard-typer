@@ -19,6 +19,7 @@
 ; --- Constants ---
 VERSION := "1.1.0"
 STEP_MENU_ITEM := "Step mode (one line per press)"
+SHOW_TEXT_MENU_ITEM := "Show typed text (step mode)"
 
 ; --- Settings (edit these) ---
 HOTKEY_TYPE_CLIPBOARD := "^+!v"  ; Ctrl+Shift+Alt+V  (^ Ctrl, + Shift, ! Alt, # Win)
@@ -32,13 +33,15 @@ FOCUS_SETTLE_MS := 300           ; give the remote field time to take focus afte
 SHOW_STARTUP_TIP := true         ; notification on launch; set to false if this runs at Windows startup
 STEP_MODE := false               ; start in step mode: each press types the next line (toggle any time: tray icon > Step mode)
 STEP_SELECT_ALL_FIRST := true    ; step mode: press Ctrl+A before typing, so each line replaces the field's text
-STEP_STATUS_MS := 1500           ; step mode: how long the "2/5: item" status shows
+STEP_STATUS_MS := 1500           ; step mode: how long the "2/5 typed" status shows
+STEP_SHOW_TEXT := false          ; step mode: show the typed line in the status. Off so passwords never appear on screen
+                                 ; (turn on any time: tray icon > Show typed text)
 
 ; --- Wiring ---
 ; NOTE: instance names differ from class names; AHK v2 names are case-insensitive, so
 ;       inputSender := InputSender() would try to overwrite the class and fail at load.
 sender := InputSender(SEND_MODE, KEY_DELAY_MS, KEY_PRESS_MS)
-typer := ClipboardTyper(sender, MAX_CHARS, CLICK_TIMEOUT_SEC, FOCUS_SETTLE_MS, STEP_MODE, STEP_SELECT_ALL_FIRST, STEP_STATUS_MS)
+typer := ClipboardTyper(sender, MAX_CHARS, CLICK_TIMEOUT_SEC, FOCUS_SETTLE_MS, STEP_MODE, STEP_SELECT_ALL_FIRST, STEP_STATUS_MS, STEP_SHOW_TEXT)
 
 hotkeyCallback := ObjBindMethod(typer, "OnHotkey")
 typeCallback := ObjBindMethod(typer, "TypeClipboard")
@@ -63,6 +66,10 @@ A_TrayMenu.Add("Type clipboard", typeCallback)
 A_TrayMenu.Add(STEP_MENU_ITEM, OnStepMenu)
 if typer.IsStepMode() {
     A_TrayMenu.Check(STEP_MENU_ITEM)
+}
+A_TrayMenu.Add(SHOW_TEXT_MENU_ITEM, OnShowTextMenu)
+if typer.IsShowingStepText() {
+    A_TrayMenu.Check(SHOW_TEXT_MENU_ITEM)
 }
 A_TrayMenu.Add("How to use", ShowHelp)
 A_IconTip := IconTipText()
@@ -102,8 +109,22 @@ OnStepMenu(itemName, *) {
     A_IconTip := IconTipText()
 }
 
+; Tray menu > Show typed text: flips the step-mode text preview and keeps the check mark and tray tooltip in sync.
+OnShowTextMenu(itemName, *) {
+    if typer.ToggleShowStepText() {
+        A_TrayMenu.Check(itemName)
+    } else {
+        A_TrayMenu.Uncheck(itemName)
+    }
+    A_IconTip := IconTipText()
+}
+
 IconTipText() {
-    return "Clipboard Typer " . VERSION . " (" . hotkeyLabel . ")" . (typer.IsStepMode() ? " - step mode" : "")
+    tip := "Clipboard Typer " . VERSION . " (" . hotkeyLabel . ")"
+    if typer.IsStepMode() {
+        tip .= " - step mode" . (typer.IsShowingStepText() ? ", shows typed text" : "")
+    }
+    return tip
 }
 
 ; Tray menu > How to use
@@ -117,7 +138,8 @@ ShowHelp(*) {
         . "Step mode (tray icon > Step mode): each press of " . hotkeyLabel . " types the next line into the field "
         . "that has focus, replacing its text. No click needed. Blank lines are skipped and only the first column "
         . "of a spreadsheet copy is typed. Copy again to restart at line 1. Tray icon > Type clipboard still "
-        . "types everything.`n`n"
+        . "types everything. The status shows only the line number; tick tray icon > Show typed text to see the "
+        . "line itself, and leave it off for passwords.`n`n"
         . "Wrong symbols? The remote keyboard layout differs from yours; try SEND_MODE := `"Text`".`n"
         . "Characters dropped? Raise KEY_DELAY_MS.`n"
         . "Settings are the constants near the top of the script. Errors go to error.log next to it.",
@@ -209,9 +231,10 @@ class ClipboardTyper {
     _index := 1             ; step mode: next line to type
     _needsReload := true    ; step mode: set on every clipboard change
     _clipChangeCallback := ""
+    _showStepText := false  ; step mode: show the typed line in the status (off so passwords stay off screen)
 
     ; --- Constructor ---
-    __New(sender, maxChars, clickTimeoutSec, focusSettleMs, stepMode := false, stepSelectAllFirst := true, stepStatusMs := 1500) {
+    __New(sender, maxChars, clickTimeoutSec, focusSettleMs, stepMode := false, stepSelectAllFirst := true, stepStatusMs := 1500, showStepText := false) {
         if !IsObject(sender) {
             throw Error("InputSender is required", A_ThisFunc)
         }
@@ -234,6 +257,7 @@ class ClipboardTyper {
         this._stepMode := !!stepMode
         this._stepSelectAllFirst := !!stepSelectAllFirst
         this._stepStatusMs := stepStatusMs
+        this._showStepText := !!showStepText
         this._clearTipCallback := ObjBindMethod(this, "_ClearTip")
         this._clipChangeCallback := ObjBindMethod(this, "_OnClipboardChange")
         if !this._clipChangeCallback {
@@ -353,7 +377,7 @@ class ClipboardTyper {
                 this._Notify("Send failed (see error.log)")
                 return false  ; NOTE: _index doesn't advance, so the next press retries this line
             }
-            this._Notify(this._index . "/" . total . ": " . item, this._stepStatusMs)
+            this._Notify(this._StepStatus(this._index, total, item), this._stepStatusMs)
             if total > 1 {
                 this._index += 1  ; NOTE: a single line retypes on every press, like the full typer
             }
@@ -378,6 +402,16 @@ class ClipboardTyper {
 
     IsStepMode() {
         return this._stepMode
+    }
+
+    ; Tray menu: flips whether the step-mode status shows the typed line. Returns the new state.
+    ToggleShowStepText() {
+        this._showStepText := !this._showStepText
+        return this._showStepText
+    }
+
+    IsShowingStepText() {
+        return this._showStepText
     }
 
     ; --- Private Methods ---
@@ -505,6 +539,15 @@ class ClipboardTyper {
     ; OnClipboardChange: any new copy restarts step mode at line 1 of the new clipboard.
     _OnClipboardChange(*) {
         this._needsReload := true
+    }
+
+    ; Step mode status after a press. Shows the typed line only when Show typed text is on, so a
+    ; password never appears on screen by default; when off it carries nothing derived from the text.
+    _StepStatus(index, total, item) {
+        if this._showStepText {
+            return index . "/" . total . ": " . item
+        }
+        return index . "/" . total . " typed"
     }
 
     _ShowTip(message) {

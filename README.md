@@ -35,7 +35,9 @@ The tray icon's **How to use** item shows these steps inside the app.
 Use this to type a list one item at a time, such as names copied from a spreadsheet into a search box. Right-click the tray icon and tick **Step mode (one line per press)**. Then each press of **Ctrl+Shift+Alt+V**:
 
 - selects the text in the field that has focus (Ctrl+A) and types the next line in its place. There's no click step.
-- shows which item it typed, like `2/3: camera-02`.
+- shows its progress, like `2/3 typed`.
+
+The status doesn't show the text itself, so a password never appears on screen. To see each line as it's typed (`2/3: camera-02`), for example when working through a list of names, tick **Show typed text (step mode)** in the tray menu. It's off by default and off again every time the script starts. Untick it before typing a password.
 
 After the last line it shows "End of list" and types nothing. Copy anything to start again at line 1. A clipboard with a single line types that line on every press.
 
@@ -65,7 +67,8 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Edit them in an
 | `SHOW_STARTUP_TIP` | `true` | Set to `false` to hide the notification at launch, for example if it runs at Windows startup |
 | `STEP_MODE` | `false` | Start with step mode on. You can switch it any time from the tray menu |
 | `STEP_SELECT_ALL_FIRST` | `true` | In step mode, press Ctrl+A before typing so each line replaces the field's text |
-| `STEP_STATUS_MS` | `1500` | How long the step-mode status (`2/3: item`) stays on screen |
+| `STEP_STATUS_MS` | `1500` | How long the step-mode status (`2/3 typed`) stays on screen |
+| `STEP_SHOW_TEXT` | `false` | Start with **Show typed text** on, so the step-mode status includes the line it typed. Leave it `false` if you ever type passwords |
 
 ## Troubleshooting
 
@@ -78,6 +81,7 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Edit them in an
 ## Privacy and security
 
 - It runs only on your PC and never connects to anything. It never saves what's on your clipboard; `error.log` only records error messages.
+- Nothing from the clipboard is shown on screen unless you turn on **Show typed text** in the tray menu.
 - The text is typed as ordinary keystrokes. Anything that records keystrokes will see it, including keystroke or command logging in a remote session. Keep that in mind before typing a password.
 - Clipboard sync is often turned off on purpose. Check that typing text into a session fits your organization's policy.
 

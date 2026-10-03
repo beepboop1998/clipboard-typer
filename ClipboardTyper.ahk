@@ -122,7 +122,11 @@ OnShowTextMenu(itemName, *) {
 IconTipText() {
     tip := "Clipboard Typer " . VERSION . " (" . hotkeyLabel . ")"
     if typer.IsStepMode() {
-        tip .= " - step mode" . (typer.IsShowingStepText() ? ", shows typed text" : "")
+        tip .= " - step mode"
+    }
+    ; NOTE: shown even with step mode off, so the preview can't be forgotten before step mode is turned back on
+    if typer.IsShowingStepText() {
+        tip .= (typer.IsStepMode() ? ", " : " - ") . "shows typed text"
     }
     return tip
 }

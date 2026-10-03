@@ -57,6 +57,7 @@ Check("status with text hidden", typer._StepStatus(2, 5, "hunter2"), "2/5 typed"
 OnShowTextMenu(SHOW_TEXT_MENU_ITEM)
 Check("tray toggle shows typed text", typer.IsShowingStepText() ? "on" : "off", "on")
 Check("status with text shown", typer._StepStatus(2, 5, "camera-02"), "2/5: camera-02")
+Check("tray tip warns about typed text even with step mode off", InStr(A_IconTip, " - shows typed text") ? "yes" : "no: " . A_IconTip, "yes")
 OnStepMenu(STEP_MENU_ITEM)
 Check("tray tip says typed text is shown", InStr(A_IconTip, "step mode, shows typed text") ? "yes" : "no: " . A_IconTip, "yes")
 OnStepMenu(STEP_MENU_ITEM)

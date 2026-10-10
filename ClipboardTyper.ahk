@@ -7,19 +7,18 @@
     Author: reuben
     Version: see VERSION below
     License: MIT
-    Usage: copy text > press Ctrl+Shift+Alt+V (or tray icon > Type clipboard)
+    Usage: copy text > press Ctrl+Shift+Alt+V (or double-click the tray icon)
            > click the target field > it types.
            Esc cancels while it waits for the click. While typing, any click or Esc stops it.
            Step mode (tray icon > Step mode): each press types the next line into the focused field instead.
-           Settings are the constants under "Settings" below. Tray icon > How to use has the details.
+           Settings are the constants under "Settings" below (tray icon > Troubleshooting > Edit script
+           settings, then Reload script). Tray icon > How to use has the details.
 */
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
 ; --- Constants ---
 VERSION := "1.1.0"
-STEP_MENU_ITEM := "Step mode (one line per press)"
-SHOW_TEXT_MENU_ITEM := "Show typed text (step mode)"
 
 ; --- Settings (edit these) ---
 HOTKEY_TYPE_CLIPBOARD := "^+!v"  ; Ctrl+Shift+Alt+V  (^ Ctrl, + Shift, ! Alt, # Win)
@@ -33,10 +32,12 @@ FOCUS_SETTLE_MS := 300           ; give the remote field time to take focus afte
 SHOW_STARTUP_TIP := true         ; notification on launch; set to false if this runs at Windows startup
 STEP_MODE := false               ; start in step mode: each press types the next line (toggle any time: tray icon > Step mode)
 STEP_SELECT_ALL_FIRST := true    ; step mode: press Ctrl+A before typing, so each line replaces the field's text
+                                 ; (switch any time: tray icon > Step options)
 STEP_STATUS_MS := 1500           ; step mode: how long the "2/5 typed" status shows
 STEP_SHOW_TEXT := false          ; step mode: show the typed line in the status. Off so passwords never appear on screen
-                                 ; (turn on any time: tray icon > Show typed text)
-DEBUG_LOG := false               ; record what each run did in debug.log next to the script (never the text itself)
+                                 ; (turn on any time: tray icon > Step options > Show typed text)
+DEBUG_LOG := false               ; start with debug logging on (tray: Troubleshooting > Debug logging): what each run did,
+                                 ; in debug.log next to the script; never the text itself
 
 ; --- Wiring ---
 ; NOTE: instance names differ from class names; AHK v2 names are case-insensitive, so
@@ -48,11 +49,10 @@ sender := InputSender(SEND_MODE, KEY_DELAY_MS, KEY_PRESS_MS, appLog)
 typer := ClipboardTyper(sender, appLog, MAX_CHARS, CLICK_TIMEOUT_SEC, FOCUS_SETTLE_MS, STEP_MODE, STEP_SELECT_ALL_FIRST, STEP_STATUS_MS, STEP_SHOW_TEXT)
 
 hotkeyCallback := ObjBindMethod(typer, "OnHotkey")
-typeCallback := ObjBindMethod(typer, "TypeClipboard")
 activeCallback := ObjBindMethod(typer, "IsActive")
 clickCallback := ObjBindMethod(typer, "OnClick")
 cancelCallback := ObjBindMethod(typer, "Cancel")
-if !hotkeyCallback || !typeCallback || !activeCallback || !clickCallback || !cancelCallback {
+if !hotkeyCallback || !activeCallback || !clickCallback || !cancelCallback {
     throw Error("Failed to bind ClipboardTyper callbacks", "Main")
 }
 ; NOTE: the hotkey follows step mode; the tray's "Type clipboard" always types everything
@@ -65,24 +65,17 @@ Hotkey("*Esc", cancelCallback)
 HotIf()
 
 hotkeyLabel := DescribeHotkey(HOTKEY_TYPE_CLIPBOARD)
-A_TrayMenu.Add()
-A_TrayMenu.Add("Type clipboard", typeCallback)
-A_TrayMenu.Add(STEP_MENU_ITEM, OnStepMenu)
-if typer.IsStepMode() {
-    A_TrayMenu.Check(STEP_MENU_ITEM)
-}
-A_TrayMenu.Add(SHOW_TEXT_MENU_ITEM, OnShowTextMenu)
-if typer.IsShowingStepText() {
-    A_TrayMenu.Check(SHOW_TEXT_MENU_ITEM)
-}
-A_TrayMenu.Add("How to use", ShowHelp)
-A_IconTip := IconTipText()
+tray := TrayMenu(A_TrayMenu, typer, appLog, ShowHelp, DebugStartFields, VERSION, hotkeyLabel)
+tray.Build()
 OnExit(OnScriptExit)
 OnError(OnUnhandledError)  ; NOTE: last, so an invalid setting above still shows AutoHotkey's error dialog at startup
 if SHOW_STARTUP_TIP {
-    TrayTip("Press " . hotkeyLabel . " to type the clipboard.`nRight-click the tray icon for help.", "Clipboard Typer " . VERSION . " is running", "Iconi Mute")
+    TrayTip("Press " . hotkeyLabel . " or double-click the tray icon to type the clipboard.`nRight-click the tray icon for options and help.", "Clipboard Typer " . VERSION . " is running", "Iconi Mute")
 }
-appLog.Debug("start", DebugStartFields())
+if !appLog.Debug("start", DebugStartFields()) {
+    appLog.SetDebugEnabled(false)  ; NOTE: as in Troubleshooting > Debug logging: unwritable, so untick it (the Logger said why)
+    tray.Refresh()
+}
 
 
 ; --- Entry-point helpers ---
@@ -104,26 +97,6 @@ DescribeHotkey(hk) {
         key := SubStr(key, 2)
     }
     return label . StrUpper(SubStr(key, 1, 1)) . SubStr(key, 2)
-}
-
-; Tray menu > Step mode: flips step mode and keeps the check mark and tray tooltip in sync.
-OnStepMenu(itemName, *) {
-    if typer.ToggleStepMode() {
-        A_TrayMenu.Check(itemName)
-    } else {
-        A_TrayMenu.Uncheck(itemName)
-    }
-    A_IconTip := IconTipText()
-}
-
-; Tray menu > Show typed text: flips the step-mode text preview and keeps the check mark and tray tooltip in sync.
-OnShowTextMenu(itemName, *) {
-    if typer.ToggleShowStepText() {
-        A_TrayMenu.Check(itemName)
-    } else {
-        A_TrayMenu.Uncheck(itemName)
-    }
-    A_IconTip := IconTipText()
 }
 
 ; OnError: logs an error no try/catch handled, lets go of stuck modifiers, and shows a short notice
@@ -165,35 +138,255 @@ DebugStartFields() {
         . " step=" . (typer.IsStepMode() ? 1 : 0) . " layout=" . layout
 }
 
-IconTipText() {
-    tip := "Clipboard Typer " . VERSION . " (" . hotkeyLabel . ")"
-    if typer.IsStepMode() {
-        tip .= " - step mode"
-    }
-    ; NOTE: shown even with step mode off, so the preview can't be forgotten before step mode is turned back on
-    if typer.IsShowingStepText() {
-        tip .= (typer.IsStepMode() ? ", " : " - ") . "shows typed text"
-    }
-    return tip
-}
-
 ; Tray menu > How to use
 ShowHelp(*) {
     MsgBox(
         "1. Copy the text you want typed.`n"
-        . "2. Press " . hotkeyLabel . " (or tray icon > Type clipboard).`n"
+        . "2. Press " . hotkeyLabel . " or double-click the tray icon.`n"
         . "3. Within " . CLICK_TIMEOUT_SEC . "s, click the field to type into. Typing starts right after.`n`n"
         . "Stop: press Esc or click anywhere. It also stops if another window takes focus.`n"
         . "Line breaks press Enter and tabs press Tab. Limit: " . MAX_CHARS . " characters.`n`n"
         . "Step mode (tray icon > Step mode): each press of " . hotkeyLabel . " types the next line into the field "
         . "that has focus, replacing its text. No click needed. Blank lines are skipped and only the first column "
-        . "of a spreadsheet copy is typed. Copy again to restart at line 1. Tray icon > Type clipboard still "
-        . "types everything. The status shows only the line number; tick tray icon > Show typed text to see the "
-        . "line itself, and leave it off for passwords.`n`n"
+        . "of a spreadsheet copy is typed. Copy again to restart at line 1. Tray icon > Type clipboard and double-clicking "
+        . "the tray icon still type everything. The status shows only the line number; tick tray icon > Step options > Show typed text "
+        . "to see the line itself, and leave it off for passwords.`n`n"
         . "Wrong symbols? The remote keyboard layout differs from yours; try SEND_MODE := `"Text`".`n"
         . "Characters dropped? Raise KEY_DELAY_MS.`n"
-        . "Settings are the constants near the top of the script. Errors go to error.log next to it.",
+        . "Settings are the constants near the top of the script: tray icon > Troubleshooting > Edit script settings, "
+        . "save, then Troubleshooting > Reload script. Errors go to error.log next to the script; "
+        . "Troubleshooting > Debug logging records more in debug.log.",
         "Clipboard Typer " . VERSION . ": How to use", "Iconi")
+}
+
+
+class TrayMenu {
+    ; --- Labels ---
+    static TYPE_ITEM := "Type clipboard"
+    static STEP_ITEM := "Step mode (one line per press)"
+    static STEP_OPTIONS_ITEM := "Step options"
+    static SHOW_TEXT_ITEM := "Show typed text"
+    static SELECT_ALL_ITEM := "Select field text first (Ctrl+A)"
+    static TROUBLE_ITEM := "Troubleshooting"
+    static DEBUG_ITEM := "Debug logging"
+    static OPEN_LOG_ITEM := "Open log folder"
+    static EDIT_ITEM := "Edit script settings"
+    static RELOAD_ITEM := "Reload script"
+    static HELP_ITEM := "How to use"
+    static EXIT_ITEM := "Exit"
+
+    ; --- Properties ---
+    _menu := ""             ; the tray menu (A_TrayMenu), passed in
+    _typer := ""
+    _logger := ""
+    _helpFn := ""
+    _startFieldsFn := ""    ; returns the fields of the debug log's "start" line
+    _version := ""
+    _hotkeyLabel := ""
+    _stepMenu := ""
+    _troubleMenu := ""
+    _callbacks := ""        ; method name -> callback bound to this, bound once
+
+    ; --- Constructor ---
+    ; NOTE: the first parameter is neither "menu" nor "trayMenu": names ignore case, so either would hide
+    ;       the Menu class or this TrayMenu class inside the constructor
+    __New(rootMenu, typer, logWriter, helpFn, startFieldsFn, version, hotkeyLabel) {
+        if !IsObject(rootMenu) || !IsObject(typer) || !IsObject(logWriter) {
+            throw Error("TrayMenu needs the tray menu, the typer and a Logger", A_ThisFunc)
+        }
+        if !HasMethod(helpFn) || !HasMethod(startFieldsFn) {
+            throw Error("TrayMenu needs the help and debug-start functions", A_ThisFunc)
+        }
+        this._menu := rootMenu
+        this._typer := typer
+        this._logger := logWriter
+        this._helpFn := helpFn
+        this._startFieldsFn := startFieldsFn
+        this._version := version
+        this._hotkeyLabel := hotkeyLabel
+        this._stepMenu := Menu()
+        this._troubleMenu := Menu()
+        this._callbacks := Map()
+        for name in ["OnTypeClipboard", "OnStepMode", "OnShowText", "OnSelectAll", "OnDebugLogging",
+            "OnOpenLogFolder", "OnEditSettings", "OnReload", "OnHelp", "OnExitItem"] {
+            callback := ObjBindMethod(this, name)
+            if !callback {
+                throw Error("Failed to bind " . name, A_ThisFunc)
+            }
+            this._callbacks[name] := callback
+        }
+    }
+
+    ; --- Public Methods ---
+    ; Replaces AutoHotkey's own tray items (Open, Window Spy, Suspend, ...) with the app's menu.
+    Build() {
+        cb := this._callbacks
+        this._stepMenu.Delete()
+        this._stepMenu.Add(TrayMenu.SHOW_TEXT_ITEM, cb["OnShowText"])
+        this._stepMenu.Add(TrayMenu.SELECT_ALL_ITEM, cb["OnSelectAll"])
+        this._troubleMenu.Delete()
+        this._troubleMenu.Add(TrayMenu.DEBUG_ITEM, cb["OnDebugLogging"])
+        this._troubleMenu.Add()
+        this._troubleMenu.Add(TrayMenu.OPEN_LOG_ITEM, cb["OnOpenLogFolder"])
+        this._troubleMenu.Add(TrayMenu.EDIT_ITEM, cb["OnEditSettings"])
+        this._troubleMenu.Add(TrayMenu.RELOAD_ITEM, cb["OnReload"])
+        m := this._menu
+        m.Delete()
+        m.Add(TrayMenu.TYPE_ITEM, cb["OnTypeClipboard"])
+        m.Add(TrayMenu.STEP_ITEM, cb["OnStepMode"])
+        m.Add()
+        m.Add(TrayMenu.STEP_OPTIONS_ITEM, this._stepMenu)
+        m.Add(TrayMenu.TROUBLE_ITEM, this._troubleMenu)
+        m.Add()
+        m.Add(TrayMenu.HELP_ITEM, cb["OnHelp"])
+        m.Add(TrayMenu.EXIT_ITEM, cb["OnExitItem"])
+        m.Default := TrayMenu.TYPE_ITEM  ; NOTE: double-clicking the tray icon runs it (ClickCount stays 2)
+        this.Refresh()
+    }
+
+    ; Brings the check marks and the tray tooltip in line with the current settings.
+    Refresh() {
+        try {
+            this._SetCheck(this._menu, TrayMenu.STEP_ITEM, this._typer.IsStepMode())
+            this._SetCheck(this._stepMenu, TrayMenu.SHOW_TEXT_ITEM, this._typer.IsShowingStepText())
+            this._SetCheck(this._stepMenu, TrayMenu.SELECT_ALL_ITEM, this._typer.IsSelectingAllFirst())
+            this._SetCheck(this._troubleMenu, TrayMenu.DEBUG_ITEM, this._logger.IsDebugEnabled())
+        } catch Error as e {
+            this._LogError(A_ThisFunc, e.Message, e)
+        }
+        A_IconTip := this._TipText()
+    }
+
+    ; Tray > Type clipboard (also the double-click action): always types everything, even in step mode.
+    OnTypeClipboard(*) {
+        return this._typer.TypeClipboard()
+    }
+
+    OnStepMode(*) {
+        this._typer.ToggleStepMode()
+        this.Refresh()
+    }
+
+    OnShowText(*) {
+        this._typer.ToggleShowStepText()
+        this.Refresh()
+    }
+
+    OnSelectAll(*) {
+        this._typer.ToggleSelectAllFirst()
+        this.Refresh()
+    }
+
+    ; Tray > Troubleshooting > Debug logging. Turning it on starts the log with a "start" line; if that
+    ; can't be written it turns itself off again (the Logger has already said why).
+    OnDebugLogging(*) {
+        if this._logger.IsDebugEnabled() {
+            this._logger.SetDebugEnabled(false)
+        } else {
+            this._logger.SetDebugEnabled(true)
+            if !this._logger.Debug("start", this._startFieldsFn.Call()) {
+                this._logger.SetDebugEnabled(false)
+            }
+        }
+        this.Refresh()
+    }
+
+    ; Tray > Troubleshooting > Open log folder: Explorer with the newest kind of log selected.
+    OnOpenLogFolder(*) {
+        path := ""
+        for kind in ["debug", "error"] {
+            if FileExist(this._logger.LogPath(kind)) {
+                path := this._logger.LogPath(kind)
+                break
+            }
+        }
+        if path = "" {
+            this._Notice("No log yet. Errors go to error.log; tick Troubleshooting > Debug logging for more.")
+            return false
+        }
+        try {
+            Run('explorer.exe /select,"' . path . '"')
+            return true
+        } catch Error as e {
+            this._LogError(A_ThisFunc, e.Message, e)
+            this._Notice("Couldn't open the log folder" . this._ErrorHint() . ".")
+            return false
+        }
+    }
+
+    OnEditSettings(*) {
+        try {
+            Edit()
+            return true
+        } catch Error as e {
+            this._LogError(A_ThisFunc, e.Message, e)
+            this._Notice("Couldn't open the script for editing" . this._ErrorHint() . ".")
+            return false
+        }
+    }
+
+    ; Tray > Troubleshooting > Reload script: picks up edited settings. A successful reload ends this
+    ; copy during the Sleep; reaching the line after it means the new copy didn't start.
+    OnReload(*) {
+        try {
+            Reload()
+            Sleep(1000)
+        } catch Error as e {
+            this._LogError(A_ThisFunc, e.Message, e)
+        }
+        this._Notice("Couldn't reload: the edited script has an error. Fix it and try again.")
+        return false
+    }
+
+    OnHelp(*) {
+        return this._helpFn.Call()
+    }
+
+    OnExitItem(*) {
+        ExitApp()
+    }
+
+    ; --- Private Methods ---
+    ; The tray tooltip: name, hotkey, and any setting that isn't at its default. The safety-relevant
+    ; states come first, since Windows shows only 127 characters.
+    _TipText() {
+        states := []
+        if this._typer.IsStepMode() {
+            states.Push("step mode")
+        }
+        ; NOTE: shown even with step mode off, so the preview can't be forgotten before step mode is turned back on
+        if this._typer.IsShowingStepText() {
+            states.Push("shows typed text")
+        }
+        if this._logger.IsDebugEnabled() {
+            states.Push("debug logging")
+        }
+        tip := "Clipboard Typer " . this._version . " (" . this._hotkeyLabel . ")"
+        for i, state in states {
+            tip .= (i = 1 ? " - " : ", ") . state
+        }
+        return SubStr(tip, 1, 127)
+    }
+
+    _SetCheck(menuObj, itemName, isOn) {
+        if isOn {
+            menuObj.Check(itemName)
+        } else {
+            menuObj.Uncheck(itemName)
+        }
+    }
+
+    _Notice(message) {
+        try TrayTip(message, "Clipboard Typer", "Iconi Mute")
+    }
+
+    _ErrorHint() {
+        return this._logger.LastErrorWritten() ? " (see error.log)" : ""
+    }
+
+    _LogError(caller, message, err := "") {
+        return this._logger.Error(caller, message, err)
+    }
 }
 
 
@@ -666,6 +859,16 @@ class ClipboardTyper {
 
     IsShowingStepText() {
         return this._showStepText
+    }
+
+    ; Tray menu: flips whether step mode selects the field's text (Ctrl+A) before typing. Returns the new state.
+    ToggleSelectAllFirst() {
+        this._stepSelectAllFirst := !this._stepSelectAllFirst
+        return this._stepSelectAllFirst
+    }
+
+    IsSelectingAllFirst() {
+        return this._stepSelectAllFirst
     }
 
     ; --- Private Methods ---

@@ -1,7 +1,7 @@
 /*
     Unit.ahk
     Responsibility: Checks the parts of ClipboardTyper.ahk that don't need real input: hotkey labels,
-                    settings validation, send-mode prefix, tray tip, help text, error.log placement,
+                    settings validation, send-mode prefix, tray menu and tip, help text, error.log placement,
                     step-mode line splitting and toggling, the Logger, the error handler and the
                     stuck-modifier release.
     Dependencies: ..\ClipboardTyper.ahk (included, so its wiring runs too)
@@ -21,7 +21,7 @@ Out("== Unit")
 for pair in [["^+!v", "Ctrl+Shift+Alt+V"], ["#v", "Win+V"], ["F8", "F8"], ["^Numpad1", "Ctrl+Numpad1"], ["$*~!F12", "Alt+F12"], ["", ""]] {
     Check("DescribeHotkey '" . pair[1] . "'", DescribeHotkey(pair[1]), pair[2])
 }
-Check("tray tip", A_IconTip, "Clipboard Typer " . VERSION . " (" . DescribeHotkey(HOTKEY_TYPE_CLIPBOARD) . ")")
+Check("tray tip", A_IconTip, "Clipboard Typer " . VERSION . " (" . DescribeHotkey(HOTKEY_TYPE_CLIPBOARD) . ")" . (DEBUG_LOG ? " - debug logging" : ""))
 Check("Raw prefix", InputSender("Raw", 20, 10, appLog)._sendPrefix, "{Raw}")
 Check("Text prefix", InputSender("Text", 20, 10, appLog)._sendPrefix, "{Text}")
 
@@ -48,26 +48,64 @@ for pair in [
     Check("step split: " . pair[3], JoinLines(typer._SplitLines(pair[1])), pair[2])
 }
 
-; Step mode toggle keeps the tray tooltip in sync
+; The tray menu as Windows sees it: AutoHotkey's own items are gone, the app's are grouped
+hTray := A_TrayMenu.Handle
+hStep := SubMenuHandle(hTray, TrayMenu.STEP_OPTIONS_ITEM)
+hTrouble := SubMenuHandle(hTray, TrayMenu.TROUBLE_ITEM)
+Check("tray top level", MenuNames(hTray), "Type clipboard|Step mode (one line per press)|-|Step options|Troubleshooting|-|How to use|Exit")
+Check("tray Step options", MenuNames(hStep), "Show typed text|Select field text first (Ctrl+A)")
+Check("tray Troubleshooting", MenuNames(hTrouble), "Debug logging|-|Open log folder|Edit script settings|Reload script")
+Check("double-click runs Type clipboard", A_TrayMenu.Default, TrayMenu.TYPE_ITEM)
+Check("tray tip comes from _TipText", tray._TipText(), A_IconTip)
+
+; Step mode toggle keeps the check mark and tray tooltip in sync
 Check("step mode off at start", typer.IsStepMode() ? "on" : "off", STEP_MODE ? "on" : "off")
-OnStepMenu(STEP_MENU_ITEM)
+tray.OnStepMode()
 Check("tray toggle turns step mode on", typer.IsStepMode() ? "on" : "off", "on")
+Check("step mode item ticked", MenuChecked(hTray, TrayMenu.STEP_ITEM), "ticked")
 Check("tray tip shows step mode", InStr(A_IconTip, " - step mode") ? "yes" : "no", "yes")
-OnStepMenu(STEP_MENU_ITEM)
+tray.OnStepMode()
 Check("tray toggle turns step mode off", typer.IsStepMode() ? "on" : "off", "off")
+Check("step mode item unticked", MenuChecked(hTray, TrayMenu.STEP_ITEM), "unticked")
 
 ; Step status hides the typed text unless Show typed text is on (passwords stay off screen)
 Check("show typed text matches STEP_SHOW_TEXT at start", typer.IsShowingStepText() ? "on" : "off", STEP_SHOW_TEXT ? "on" : "off")
 Check("status with text hidden", typer._StepStatus(2, 5, "hunter2"), "2/5 typed")
-OnShowTextMenu(SHOW_TEXT_MENU_ITEM)
+tray.OnShowText()
 Check("tray toggle shows typed text", typer.IsShowingStepText() ? "on" : "off", "on")
+Check("show typed text item ticked", MenuChecked(hStep, TrayMenu.SHOW_TEXT_ITEM), "ticked")
 Check("status with text shown", typer._StepStatus(2, 5, "camera-02"), "2/5: camera-02")
 Check("tray tip warns about typed text even with step mode off", InStr(A_IconTip, " - shows typed text") ? "yes" : "no: " . A_IconTip, "yes")
-OnStepMenu(STEP_MENU_ITEM)
+tray.OnStepMode()
 Check("tray tip says typed text is shown", InStr(A_IconTip, "step mode, shows typed text") ? "yes" : "no: " . A_IconTip, "yes")
-OnStepMenu(STEP_MENU_ITEM)
-OnShowTextMenu(SHOW_TEXT_MENU_ITEM)
+tray.OnStepMode()
+tray.OnShowText()
 Check("tray toggle hides typed text again", typer.IsShowingStepText() ? "on" : "off", "off")
+
+; Select field text first follows STEP_SELECT_ALL_FIRST and toggles from Step options
+Check("select-all item matches STEP_SELECT_ALL_FIRST", MenuChecked(hStep, TrayMenu.SELECT_ALL_ITEM), STEP_SELECT_ALL_FIRST ? "ticked" : "unticked")
+tray.OnSelectAll()
+Check("tray toggle flips select-all", typer.IsSelectingAllFirst() ? "on" : "off", STEP_SELECT_ALL_FIRST ? "off" : "on")
+Check("select-all item follows", MenuChecked(hStep, TrayMenu.SELECT_ALL_ITEM), STEP_SELECT_ALL_FIRST ? "unticked" : "ticked")
+tray.OnSelectAll()
+
+; Debug logging from the tray: starts debug.log with a start line, ticks, and shows in the tooltip
+if appLog.IsDebugEnabled() {
+    tray.OnDebugLogging()  ; NOTE: start from off, so DEBUG_LOG := true in the script can't flip the checks below
+}
+for name in ["debug.log", "debug.old.log"] {
+    try FileDelete(A_ScriptDir . "\" . name)
+}
+tray.OnDebugLogging()
+Check("tray turns debug logging on", appLog.IsDebugEnabled() ? "on" : "off", "on")
+Check("debug logging item ticked", MenuChecked(hTrouble, TrayMenu.DEBUG_ITEM), "ticked")
+Check("tray tip says debug logging", InStr(A_IconTip, "debug logging") ? "yes" : "no: " . A_IconTip, "yes")
+startLine := FileExist(A_ScriptDir . "\debug.log") ? FileRead(A_ScriptDir . "\debug.log") : ""
+Check("debug.log starts with a start line", RegExMatch(startLine, "i)DEBUG start ver=\S+ ahk=\S+ .* layout=[0-9A-F]{8}") ? "yes" : "no: " . startLine, "yes")
+tray.OnDebugLogging()
+Check("tray turns debug logging off", appLog.IsDebugEnabled() ? "on" : "off", "off")
+Check("debug logging item unticked", MenuChecked(hTrouble, TrayMenu.DEBUG_ITEM), "unticked")
+try FileDelete(A_ScriptDir . "\debug.log")
 
 ; Step mode messages for the paths that type nothing, with _Notify swapped for a spy
 lastNotice := ""
@@ -177,7 +215,49 @@ GrabHelp() {
     Check("help mentions the hotkey", InStr(text, DescribeHotkey(HOTKEY_TYPE_CLIPBOARD)) ? "yes" : "no", "yes")
     Check("help mentions the limit", InStr(text, MAX_CHARS . " characters") ? "yes" : "no", "yes")
     Check("help explains step mode", InStr(text, "Step mode") ? "yes" : "no", "yes")
-    Check("help mentions Show typed text", InStr(text, "Show typed text") ? "yes" : "no", "yes")
+    Check("help mentions Show typed text", InStr(text, "Step options > Show typed text") ? "yes" : "no", "yes")
+    Check("help says how to apply edited settings", InStr(text, "Reload script") ? "yes" : "no", "yes")
+}
+
+; --- Menu inspection (Win32), so the checks see the menu the user sees ---
+; Item names joined with |, separators as "-".
+MenuNames(hMenu) {
+    names := ""
+    Loop DllCall("GetMenuItemCount", "Ptr", hMenu, "Int") {
+        pos := A_Index - 1
+        state := DllCall("GetMenuState", "Ptr", hMenu, "UInt", pos, "UInt", 0x400, "UInt")  ; MF_BYPOSITION
+        ; NOTE: a submenu item (MF_POPUP 0x10) keeps its item count in the byte where MF_SEPARATOR (0x800) sits
+        if !(state & 0x10) && (state & 0x800) {
+            name := "-"
+        } else {
+            buf := Buffer(512, 0)
+            DllCall("GetMenuStringW", "Ptr", hMenu, "UInt", pos, "Ptr", buf, "Int", 256, "UInt", 0x400, "Int")
+            name := StrGet(buf, "UTF-16")
+        }
+        names .= (A_Index > 1 ? "|" : "") . name
+    }
+    return names
+}
+
+MenuPos(hMenu, itemName) {
+    for name in StrSplit(MenuNames(hMenu), "|") {
+        if name == itemName {
+            return A_Index - 1
+        }
+    }
+    return -1
+}
+
+SubMenuHandle(hMenu, itemName) {
+    return DllCall("GetSubMenu", "Ptr", hMenu, "Int", MenuPos(hMenu, itemName), "Ptr")
+}
+
+MenuChecked(hMenu, itemName) {
+    pos := MenuPos(hMenu, itemName)
+    if pos < 0 {
+        return "missing"
+    }
+    return (DllCall("GetMenuState", "Ptr", hMenu, "UInt", pos, "UInt", 0x400, "UInt") & 0x8) ? "ticked" : "unticked"  ; MF_CHECKED
 }
 
 Out(line) {

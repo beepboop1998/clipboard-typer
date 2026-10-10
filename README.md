@@ -69,6 +69,7 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Edit them in an
 | `STEP_SELECT_ALL_FIRST` | `true` | In step mode, press Ctrl+A before typing so each line replaces the field's text |
 | `STEP_STATUS_MS` | `1500` | How long the step-mode status (`2/3 typed`) stays on screen |
 | `STEP_SHOW_TEXT` | `false` | Start with **Show typed text** on, so the step-mode status includes the line it typed. Leave it `false` if you ever type passwords |
+| `DEBUG_LOG` | `false` | Record what each run did in `debug.log` next to the script: lengths, line numbers, why it stopped, and the target's program and window class. Never the text itself or window titles |
 
 ## Troubleshooting
 
@@ -76,11 +77,12 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Edit them in an
 - **Symbols are wrong:** your keyboard layout and the remote machine's differ. Match them, or try `SEND_MODE := "Text"`.
 - **The hotkey does nothing inside a remote session:** the session is capturing your keys. Press the hotkey while your own desktop has focus, then click into the session. The tray menu works too.
 - **Nothing types into a window that's running as administrator:** Windows blocks input from normal programs into admin windows. Run the script as administrator.
-- **Something else went wrong:** check `error.log` next to the script.
+- **Something else went wrong:** check `error.log` next to the script. For more detail, set `DEBUG_LOG := true`, run the script again, repeat what went wrong, and look at `debug.log`. A run that starts typing writes a line like `typed 12/80 stop=esc`; the reason is `done`, `esc`, `click`, `focus` (another window took focus) or `sendfail`. A run cancelled before you click writes `wait result=esc` or `wait result=timeout`, and each step-mode press writes a `step line=2/5 ... result=...` line instead. An `esc` line shows that Esc reached the script.
 
 ## Privacy and security
 
-- It runs only on your PC and never connects to anything. It never saves what's on your clipboard; `error.log` only records error messages.
+- It runs only on your PC and never connects to anything. It never saves what's on your clipboard; `error.log` only records error messages. `debug.log`, written only when `DEBUG_LOG` is on, records lengths, timings, stop reasons and the target's program and window class, never the text or window titles.
+- If a run is stopped, crashes, or the script exits mid-keystroke, it lets go of any Shift, Ctrl, Alt or Win key it left held down, so what you type afterwards isn't affected.
 - Nothing from the clipboard is shown on screen unless you turn on **Show typed text** in the tray menu.
 - The text is typed as ordinary keystrokes. Anything that records keystrokes will see it, including keystroke or command logging in a remote session. Keep that in mind before typing a password.
 - Clipboard sync is often turned off on purpose. Check that typing text into a session fits your organization's policy.
@@ -92,7 +94,7 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Edit them in an
 
 ## Running the tests
 
-Double-click `tests/RunTests.ahk`. It runs unit checks, then drives your mouse and keyboard for about 3 minutes against two test windows, in both send modes and in step mode. Don't touch them until the results appear. Results go to `tests/results.txt`. Close any running Clipboard Typer first; the runner checks for this.
+Double-click `tests/RunTests.ahk`. It runs unit checks, then drives your mouse and keyboard for about 4 minutes against two test windows, in both send modes and in step mode. Don't touch them until the results appear. Results go to `tests/results.txt`. Close any running Clipboard Typer first; the runner checks for this.
 
 ## License
 

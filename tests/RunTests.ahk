@@ -7,7 +7,7 @@
     Usage: double-click. Arguments (optional, any order):
              leak        also run LeakProbe.ahk (adds about 2 minutes)
              unattended  skip the prompts; exit code = number of FAIL lines
-    NOTE: the end-to-end part drives the real mouse and keyboard for about 3 minutes. Don't touch them.
+    NOTE: the end-to-end part drives the real mouse and keyboard for about 4 minutes. Don't touch them.
 */
 #Requires AutoHotkey v2.0
 #SingleInstance Force
@@ -20,6 +20,14 @@ scriptPath := A_ScriptDir . "\..\ClipboardTyper.ahk"
 resultsFile := A_ScriptDir . "\results.txt"
 workDir := A_Temp . "\ClipboardTyperTests"
 
+; One end-to-end pass per entry, in this order. Each pass runs a copy of the script with these settings
+; (plus SHOW_STARTUP_TIP := false and DEBUG_LOG := true) and the E2E suite of the same name.
+PASS_ORDER := ["Raw", "Text", "Step"]
+PASS_SETTINGS := Map(
+    "Raw",  Map("SEND_MODE", '"Raw"',  "STEP_MODE", "false"),
+    "Text", Map("SEND_MODE", '"Text"', "STEP_MODE", "false"),
+    "Step", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "true"))
+
 ; Guard: a running ClipboardTyper would also answer the test hotkey
 DetectHiddenWindows(true)
 for hwnd in WinGetList("ahk_class AutoHotkey") {
@@ -31,7 +39,7 @@ DetectHiddenWindows(false)
 
 if !unattended {
     answer := MsgBox("The end-to-end tests drive your mouse and keyboard for about "
-        . (withLeak ? 5 : 3) . " minutes. Don't touch them until the results appear.`n`nStart?",
+        . (withLeak ? 6 : 4) . " minutes. Don't touch them until the results appear.`n`nStart?",
         "ClipboardTyper tests", "OKCancel Icon!")
     if answer != "OK" {
         ExitApp()
@@ -41,21 +49,41 @@ if !unattended {
 try FileDelete(resultsFile)
 DirCreate(workDir)
 try FileDelete(workDir . "\error.log")
-RunWait('"' . ahk . '" "' . A_ScriptDir . '\Unit.ahk" "' . resultsFile . '"')
+try FileDelete(workDir . "\error.old.log")
+for name in ["debug.log", "debug.old.log", "error.log", "error.old.log"] {
+    try FileDelete(A_ScriptDir . "\" . name)  ; NOTE: Unit.ahk is the main script there, so its logs land in tests\
+}
+
+; Unit, with a time limit, so an unattended run can't hang on it
+Run('"' . ahk . '" "' . A_ScriptDir . '\Unit.ahk" "' . resultsFile . '"', , , &unitPid)
+if ProcessWaitClose(unitPid, 120) {  ; NOTE: non-zero means it timed out
+    ProcessClose(unitPid)
+    Out("FAIL Unit.ahk did not finish within 120s")
+}
+if !FileExist(resultsFile) || !InStr(FileRead(resultsFile, "UTF-8"), "`nPASS Unit completed") {
+    Out("FAIL Unit did not complete")
+}
+if FileExist(A_ScriptDir . "\error.log") {
+    Out("FAIL tests\error.log was written during Unit:`n" . FileRead(A_ScriptDir . "\error.log"))
+}
 
 source := FileRead(scriptPath, "UTF-8")
-for mode in ["Raw", "Text", "Step"] {
-    copyPath := MakeTestCopy(source, mode)
+debugLog := workDir . "\debug.log"
+for pass in PASS_ORDER {
+    copyPath := MakeTestCopy(source, pass, PASS_SETTINGS[pass])
     if copyPath = "" {
         continue  ; MakeTestCopy already logged the FAIL
+    }
+    for name in ["debug.log", "debug.old.log"] {
+        try FileDelete(workDir . "\" . name)  ; NOTE: each pass checks only its own debug lines
     }
     Run('"' . ahk . '" "' . A_ScriptDir . '\TestTarget.ahk" CT_Target 40', , , &targetPid)
     Run('"' . ahk . '" "' . A_ScriptDir . '\TestTarget.ahk" CT_Other 440', , , &otherPid)
     ; NOTE: started from System32 so the suite also covers an unwritable working dir
     Run('"' . ahk . '" "' . copyPath . '"', A_WinDir . "\System32", , &typerPid)
     Sleep(1000)
-    RunWait('"' . ahk . '" "' . A_ScriptDir . '\E2E.ahk" "' . resultsFile . '" ' . mode)
-    if withLeak && mode = "Raw" {
+    RunWait('"' . ahk . '" "' . A_ScriptDir . '\E2E.ahk" "' . resultsFile . '" ' . pass . ' "' . debugLog . '"')
+    if withLeak && pass = "Raw" {
         for method in ["activate", "click"] {
             RunWait('"' . ahk . '" "' . A_ScriptDir . '\LeakProbe.ahk" "' . resultsFile . '" ' . method . ' 5')
         }
@@ -73,26 +101,29 @@ if FileExist(workDir . "\error.log") {
     Out("PASS no error.log entries during the run")
 }
 
-results := FileRead(resultsFile, "UTF-8")
+results := "`n" . FileRead(resultsFile, "UTF-8")  ; NOTE: leading `n so a PASS or FAIL on line 1 is counted too
 StrReplace(results, "`nPASS ", , , &passes)
 StrReplace(results, "`nFAIL ", , , &fails)
 Out("== SUMMARY pass=" . passes . " fail=" . fails)
 Finish("Passed: " . passes . "   Failed: " . fails . "`n`nDetails: tests\results.txt", fails)
 
 
-; Writes a copy of the script for one test pass, with no startup notification. Returns its path, or "" on failure.
-; "Raw" and "Text" set SEND_MODE with step mode off; "Step" uses Raw with step mode on.
-MakeTestCopy(source, mode) {
-    sendMode := mode = "Step" ? "Raw" : mode
-    stepMode := mode = "Step" ? "true" : "false"
-    copy := RegExReplace(source, 'm)^SEND_MODE := "\w+"', 'SEND_MODE := "' . sendMode . '"', &modeHits)
-    copy := RegExReplace(copy, "m)^SHOW_STARTUP_TIP := \w+", "SHOW_STARTUP_TIP := false", &tipHits)
-    copy := RegExReplace(copy, "m)^STEP_MODE := \w+", "STEP_MODE := " . stepMode, &stepHits)
-    if modeHits != 1 || tipHits != 1 || stepHits != 1 {
-        Out("FAIL could not set SEND_MODE/SHOW_STARTUP_TIP/STEP_MODE in the test copy (settings lines renamed?)")
-        return ""
+; Writes a copy of the script for one test pass, with no startup notification and debug logging on.
+; Returns its path, or "" on failure. Every setting must match exactly once, so a renamed settings
+; line fails loudly instead of silently testing the defaults.
+MakeTestCopy(source, pass, settings) {
+    copy := source
+    fixed := Map("SHOW_STARTUP_TIP", "false", "DEBUG_LOG", "true")
+    for table in [settings, fixed] {
+        for name, value in table {
+            copy := RegExReplace(copy, 'm)^' . name . ' := (?:"\w*"|\w+)', name . " := " . value, &hits)
+            if hits != 1 {
+                Out("FAIL could not set " . name . " in the " . pass . " test copy (settings line renamed?)")
+                return ""
+            }
+        }
     }
-    copyPath := workDir . "\ClipboardTyper.test-" . mode . ".ahk"
+    copyPath := workDir . "\ClipboardTyper.test-" . pass . ".ahk"
     try FileDelete(copyPath)
     FileAppend(copy, copyPath, "UTF-8")
     return copyPath

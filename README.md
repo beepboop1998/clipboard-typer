@@ -41,7 +41,7 @@ Step mode (one line per press)
 Speed: Normal                   ▸  Fast · Normal · Slow · Very slow · Custom...
 After typing: nothing           ▸  Nothing · Press Enter · Press Tab
 Step options                    ▸  Show typed text · Select field text first (Ctrl+A)
-Troubleshooting                 ▸  Debug logging · Open log folder · Edit script settings · Reload script
+Troubleshooting                 ▸  Debug logging · Open log folder · Edit script settings · Reload script · Forget saved settings
 ──────────────
 How to use
 Exit
@@ -58,6 +58,21 @@ If characters go missing in a slow or laggy session, choose tray icon > **Speed*
 To press a key once everything is typed, choose tray icon > **After typing** > **Press Enter** (to submit a password or run a command) or **Press Tab** (to move to the next field). The click prompt says so before you click (`then presses Enter`), and the tray tooltip shows `then Enter`.
 
 The key is only pressed when the whole text went through and the window you clicked still has focus. A run stopped with Esc, a click or a key press, or one where another window took focus, never gets it. When After typing is on at startup, a notification and a tooltip remind you, even with `SHOW_STARTUP_TIP` off.
+
+### Saved settings
+
+The **Speed** and **After typing** you pick in the tray are remembered in `ClipboardTyper.ini` next to the script (named after the script), and they win over `KEY_DELAY_MS`, `KEY_PRESS_MS` and `AFTER_TYPING`. To go back to the script's settings, choose tray icon > **Troubleshooting** > **Forget saved settings**. Show typed text and Debug logging are never saved; they start off every time.
+
+The file holds only those choices:
+
+```ini
+[Settings]
+KeyDelayMs=40
+KeyPressMs=20
+AfterTyping=Enter
+```
+
+`AfterTyping` is `Nothing`, `Enter` or `Tab`. If you edit the file by hand, keep comments on their own line: a comment after a value makes the value invalid, and the script's setting is used instead (`error.log` says so). If the script's folder can't be written, a notice says your choice lasts only until the script restarts. Set `SAVE_SETTINGS := false` to never read or write the file.
 
 ## Step mode: one line per press
 
@@ -93,8 +108,8 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Open it with tr
 |---|---|---|
 | `HOTKEY_TYPE_CLIPBOARD` | `"^+!v"` | The hotkey (Ctrl+Shift+Alt+V). `^` is Ctrl, `+` is Shift, `!` is Alt, `#` is Win |
 | `SEND_MODE` | `"Raw"` | `"Raw"` sends real key presses and works in most remote consoles. `"Text"` sends Unicode characters and ignores keyboard layout, but many remote consoles ignore it |
-| `KEY_DELAY_MS` | `20` | Starting speed: the pause after each keystroke, 0 to 1000 ms. Change it any time from tray icon > **Speed** |
-| `KEY_PRESS_MS` | `10` | Starting speed: how long each key is held down, 0 to 1000 ms. The **Speed** presets set this too |
+| `KEY_DELAY_MS` | `20` | Starting speed: the pause after each keystroke, 0 to 1000 ms. A speed picked in the tray is saved and overrides this until **Forget saved settings** |
+| `KEY_PRESS_MS` | `10` | Starting speed: how long each key is held down, 0 to 1000 ms. The **Speed** presets set this too, and it's saved the same way |
 | `MAX_CHARS` | `2000` | Longer clipboards are refused. In step mode, longer lines are skipped |
 | `CLICK_TIMEOUT_SEC` | `10` | How long it waits for your click |
 | `FOCUS_SETTLE_MS` | `300` | Pause between your click and the first keystroke, so the field can take focus |
@@ -103,10 +118,11 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Open it with tr
 | `STEP_SELECT_ALL_FIRST` | `true` | In step mode, press Ctrl+A before typing so each line replaces the field's text. Switch it any time from tray icon > **Step options** |
 | `STEP_STATUS_MS` | `1500` | How long the step-mode status (`2/3 typed`) stays on screen |
 | `STEP_SHOW_TEXT` | `false` | Start with **Show typed text** on, so the step-mode status includes the line it typed. Leave it `false` if you ever type passwords |
-| `AFTER_TYPING` | `""` | Start with an After typing key: `"Enter"` or `"Tab"` (tray icon > **After typing**) |
+| `AFTER_TYPING` | `""` | Start with an After typing key: `"Enter"` or `"Tab"`. A choice made in tray icon > **After typing** is saved and overrides this until **Forget saved settings** |
 | `STOP_ON_KEYPRESS` | `true` | A key you press while it types stops it, and the key is blocked. Set to `false` to stop only with Esc or a click |
 | `BLOCKED_TARGET_CLASSES` | desktop, taskbars, Start/Search | Window classes it never types into. Remove one if a window you need is refused; the refusal names its class |
 | `REQUIRE_CLICKED_FOCUS` | `true` | Refuse to type when the window you clicked didn't take focus. Set to `false` if a remote viewer is wrongly refused |
+| `SAVE_SETTINGS` | `true` | Remember the tray's Speed and After typing in the `.ini` file next to the script. `false` never reads or writes it |
 | `DEBUG_LOG` | `false` | Start with debug logging on (tray icon > **Troubleshooting** > **Debug logging**): `debug.log` next to the script records what each run did: lengths, line numbers, why it stopped, and the target's program and window class. Never the text itself or window titles |
 
 ## Troubleshooting
@@ -115,6 +131,7 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Open it with tr
 - **"Won't type into the desktop, taskbar or Start":** your click landed there, or that window has focus. Click the field itself. If a window you need is refused, remove its class (named in the message) from `BLOCKED_TARGET_CLASSES`.
 - **"The window you clicked didn't take focus":** click the field again. If it happens every time with one remote viewer, set `REQUIRE_CLICKED_FOCUS := false` and tell us which viewer.
 - **"Focused control isn't a text box" (step mode):** a button, checkbox or list has focus, often after **After typing: Press Tab**. Click the text field and press again.
+- **An edited `KEY_DELAY_MS`, `KEY_PRESS_MS` or `AFTER_TYPING` seems ignored:** a choice saved from the tray wins. Choose tray icon > **Troubleshooting** > **Forget saved settings**, or **Reload script** after setting `SAVE_SETTINGS := false`.
 - **Symbols are wrong:** your keyboard layout and the remote machine's differ. Match them, or try `SEND_MODE := "Text"`.
 - **The hotkey does nothing inside a remote session:** the session is capturing your keys. Press the hotkey while your own desktop has focus, then click into the session. The tray menu works too.
 - **Nothing types into a window that's running as administrator:** Windows blocks input from normal programs into admin windows. Run the script as administrator.
@@ -122,7 +139,7 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Open it with tr
 
 ## Privacy and security
 
-- It runs only on your PC and never connects to anything. It never saves what's on your clipboard; `error.log` only records error messages. `debug.log`, written only while debug logging is on (`DEBUG_LOG`, or tray icon > **Troubleshooting** > **Debug logging** for the current session), records lengths, timings, stop reasons and the target's program and window class, never the text or window titles.
+- It runs only on your PC and never connects to anything. It never saves what's on your clipboard; the `.ini` file holds only your Speed and After typing choices; `error.log` only records error messages. `debug.log`, written only while debug logging is on (`DEBUG_LOG`, or tray icon > **Troubleshooting** > **Debug logging** for the current session), records lengths, timings, stop reasons and the target's program and window class, never the text or window titles.
 - If a run is stopped, crashes, or the script exits mid-keystroke, it lets go of any Shift, Ctrl, Alt or Win key it left held down, so what you type afterwards isn't affected.
 - Nothing from the clipboard is shown on screen unless you turn on **Show typed text** in the tray menu.
 - The text is typed as ordinary keystrokes. Anything that records keystrokes will see it, including keystroke or command logging in a remote session. Keep that in mind before typing a password.
@@ -138,7 +155,7 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Open it with tr
 
 ## Running the tests
 
-Double-click `tests/RunTests.ahk`. It runs unit checks, then drives your mouse and keyboard for about 5 minutes against two test windows, in both send modes (each at every Speed preset), in step mode and with After typing: Enter. Don't touch them until the results appear. Results go to `tests/results.txt`. Close any running Clipboard Typer first; the runner checks for this.
+Double-click `tests/RunTests.ahk`. It runs unit checks, then drives your mouse and keyboard for about 5 minutes against two test windows, in both send modes (each at every Speed preset), in step mode, with After typing: Enter and with saved settings. Don't touch them until the results appear. Results go to `tests/results.txt`. Close any running Clipboard Typer first; the runner checks for this.
 
 ## License
 

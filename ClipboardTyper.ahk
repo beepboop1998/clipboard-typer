@@ -18,7 +18,7 @@
 #SingleInstance Force
 
 ; --- Constants ---
-VERSION := "1.1.0"
+VERSION := "1.2.0"
 
 ; --- Settings (edit these) ---
 HOTKEY_TYPE_CLIPBOARD := "^+!v"  ; Ctrl+Shift+Alt+V  (^ Ctrl, + Shift, ! Alt, # Win)
@@ -44,16 +44,22 @@ BLOCKED_TARGET_CLASSES := "Progman,WorkerW,Shell_TrayWnd,Shell_SecondaryTrayWnd,
                                  ; never type into these window classes: desktop, taskbars, Start/Search
                                  ; (Windows.UI.Core.CoreWindow only when it belongs to Start or Search)
 REQUIRE_CLICKED_FOCUS := true    ; refuse when the window you clicked didn't take focus; set to false if a viewer is wrongly refused
+SAVE_SETTINGS := true            ; remember the tray's Speed and After typing in <script name>.ini next to the script;
+                                 ; a saved choice overrides KEY_DELAY_MS, KEY_PRESS_MS and AFTER_TYPING (false: never read or write it)
 
 ; --- Wiring ---
 ; NOTE: instance names differ from class names; AHK v2 names are case-insensitive, so
-;       inputSender := InputSender() or logger := Logger() would try to overwrite the class and fail at load.
+;       inputSender := InputSender(), logger := Logger() or settingsStore := SettingsStore() would try to overwrite
+;       the class and fail at load.
 ;       For the same reason never name a global after a built-in function (e.g. log is the built-in Log).
 appLog := Logger(A_ScriptDir, DEBUG_LOG)
 InstallKeybdHook()  ; NOTE: unconditional, so GetKeyState(key, "P") reads the physical state for the stuck-key release
 sender := InputSender(SEND_MODE, KEY_DELAY_MS, KEY_PRESS_MS, appLog)
 typer := ClipboardTyper(sender, appLog, MAX_CHARS, CLICK_TIMEOUT_SEC, FOCUS_SETTLE_MS, STEP_MODE, STEP_SELECT_ALL_FIRST, STEP_STATUS_MS, STEP_SHOW_TEXT,
     AFTER_TYPING, BLOCKED_TARGET_CLASSES, STOP_ON_KEYPRESS, REQUIRE_CLICKED_FOCUS)
+scriptDefaults := {delay: sender.GetDelayMs(), press: sender.GetPressMs(), after: typer.GetAfterTyping()}  ; NOTE: before saved choices apply
+store := SettingsStore(SettingsPath(), appLog, SAVE_SETTINGS)
+settingsSource := ApplySavedSettings(store, sender, typer, appLog)  ; "ini" when a saved choice was applied, else "script"
 
 hotkeyCallback := ObjBindMethod(typer, "OnHotkey")
 activeCallback := ObjBindMethod(typer, "IsActive")
@@ -72,7 +78,7 @@ Hotkey("*Esc", cancelCallback)
 HotIf()
 
 hotkeyLabel := DescribeHotkey(HOTKEY_TYPE_CLIPBOARD)
-tray := TrayMenu(A_TrayMenu, typer, sender, appLog, ShowHelp, DebugStartFields, VERSION, hotkeyLabel)
+tray := TrayMenu(A_TrayMenu, typer, sender, appLog, store, scriptDefaults, ShowHelp, DebugStartFields, VERSION, hotkeyLabel)
 tray.Build()
 OnExit(OnScriptExit)
 OnError(OnUnhandledError)  ; NOTE: last, so an invalid setting above still shows AutoHotkey's error dialog at startup
@@ -142,9 +148,56 @@ DebugStartFields() {
     klid := Buffer(9 * 2, 0)  ; NOTE: the full layout ID, e.g. 00020409 for US-International, not just the language
     try layout := DllCall("GetKeyboardLayoutNameW", "Ptr", klid, "Int") ? StrGet(klid, "UTF-16") : ""
     return "ver=" . VERSION . " ahk=" . A_AhkVersion . " os=" . A_OSVersion . " admin=" . (A_IsAdmin ? 1 : 0)
-        . " mode=" . SEND_MODE . " delay=" . sender.GetDelayMs() . " press=" . sender.GetPressMs()
+        . " mode=" . SEND_MODE . " delay=" . sender.GetDelayMs() . " press=" . sender.GetPressMs() . " source=" . settingsSource
         . " step=" . (typer.IsStepMode() ? 1 : 0) . " after=" . (typer.GetAfterTyping() = "" ? "nothing" : typer.GetAfterTyping())
         . " layout=" . layout
+}
+
+; <script name>.ini next to the script, e.g. ClipboardTyper.ini; test copies and Unit.ahk each get their own.
+SettingsPath() {
+    return A_ScriptDir . "\" . RegExReplace(A_ScriptName, "i)\.ahk$") . ".ini"
+}
+
+; Applies the Speed and After typing saved from the tray. A value that isn't valid is logged and the script's
+; setting is kept. Returns "ini" when a saved choice was applied, otherwise "script".
+ApplySavedSettings(savedStore, keySender, clipTyper, logWriter) {
+    if !savedStore.IsEnabled() {
+        logWriter.Debug("ini", "read=disabled")
+        return "script"  ; guard: SAVE_SETTINGS is off
+    }
+    notSaved := "<not saved>"  ; NOTE: a sentinel, since an empty value is a value (and invalid)
+    delay := Trim(savedStore.Read("KeyDelayMs", notSaved))
+    press := Trim(savedStore.Read("KeyPressMs", notSaved))
+    after := Trim(savedStore.Read("AfterTyping", notSaved))
+    if delay = notSaved && press = notSaved && after = notSaved {
+        logWriter.Debug("ini", "read=missing")
+        return "script"
+    }
+    applied := false
+    invalid := []
+    if delay != notSaved || press != notSaved {
+        if keySender.SetDelays(delay != notSaved ? delay : keySender.GetDelayMs(), press != notSaved ? press : keySender.GetPressMs()) {
+            applied := true
+        } else {
+            invalid.Push("KeyDelayMs/KeyPressMs")
+            logWriter.Error(A_ThisFunc, 'Ignored saved speed "' . delay . '/' . press . '"; using the script' . "'s")
+        }
+    }
+    if after != notSaved {
+        ; NOTE: "Nothing" is written for no key, so it can override AFTER_TYPING := "Enter"; an empty value is invalid
+        if (after = "Nothing" && clipTyper.SetAfterTyping("")) || (after != "" && after != "Nothing" && clipTyper.SetAfterTyping(after)) {
+            applied := true
+        } else {
+            invalid.Push("AfterTyping")
+            logWriter.Error(A_ThisFunc, 'Ignored saved AfterTyping "' . after . '"; using the script' . "'s")
+        }
+    }
+    joined := ""
+    for name in invalid {
+        joined .= (A_Index > 1 ? "," : "") . name
+    }
+    logWriter.Debug("ini", "read=" . (joined = "" ? "ok" : "invalid:" . joined))
+    return applied ? "ini" : "script"
 }
 
 ; At startup: an After typing key that is switched on is announced even with SHOW_STARTUP_TIP off,
@@ -178,6 +231,8 @@ ShowHelp(*) {
         . "the next press types it again, without the After typing key.`n`n"
         . "Wrong symbols? The remote keyboard layout differs from yours; try SEND_MODE := `"Text`".`n"
         . "Characters dropped? Tray icon > Speed > Slow (or Very slow).`n"
+        . "Speed and After typing chosen in the tray are saved and override the script's settings "
+        . "(Troubleshooting > Forget saved settings).`n"
         . "Settings are the constants near the top of the script: tray icon > Troubleshooting > Edit script settings, "
         . "save, then Troubleshooting > Reload script. Errors go to error.log next to the script; "
         . "Troubleshooting > Debug logging records more in debug.log.",
@@ -211,6 +266,7 @@ class TrayMenu {
     static OPEN_LOG_ITEM := "Open log folder"
     static EDIT_ITEM := "Edit script settings"
     static RELOAD_ITEM := "Reload script"
+    static FORGET_ITEM := "Forget saved settings"
     static HELP_ITEM := "How to use"
     static EXIT_ITEM := "Exit"
 
@@ -230,6 +286,9 @@ class TrayMenu {
     _afterMenu := ""
     _afterItemName := ""    ; the After typing item's current label
     _afterItemPos := ""     ; the After typing item's position ("5&")
+    _store := ""
+    _defaults := ""         ; the script's own speed and After typing, for Forget saved settings
+    _saveWarned := false    ; the "couldn't save" notice shows once
     _stepMenu := ""
     _troubleMenu := ""
     _callbacks := ""        ; method name -> callback bound to this, bound once
@@ -237,7 +296,10 @@ class TrayMenu {
     ; --- Constructor ---
     ; NOTE: the first parameter is neither "menu" nor "trayMenu": names ignore case, so either would hide
     ;       the Menu class or this TrayMenu class inside the constructor
-    __New(rootMenu, typer, sender, logWriter, helpFn, startFieldsFn, version, hotkeyLabel) {
+    __New(rootMenu, typer, sender, logWriter, savedStore, defaults, helpFn, startFieldsFn, version, hotkeyLabel) {
+        if !IsObject(savedStore) || !IsObject(defaults) {
+            throw Error("TrayMenu needs the SettingsStore and the script's defaults", A_ThisFunc)
+        }
         if !IsObject(rootMenu) || !IsObject(typer) || !IsObject(sender) || !IsObject(logWriter) {
             throw Error("TrayMenu needs the tray menu, the typer, the InputSender and a Logger", A_ThisFunc)
         }
@@ -252,13 +314,15 @@ class TrayMenu {
         this._startFieldsFn := startFieldsFn
         this._version := version
         this._hotkeyLabel := hotkeyLabel
+        this._store := savedStore
+        this._defaults := defaults
         this._speedMenu := Menu()
         this._afterMenu := Menu()
         this._stepMenu := Menu()
         this._troubleMenu := Menu()
         this._callbacks := Map()
         for name in ["OnTypeClipboard", "OnStepMode", "OnSpeedPreset", "OnCustomSpeed", "OnAfterTyping", "OnShowText",
-            "OnSelectAll", "OnDebugLogging", "OnOpenLogFolder", "OnEditSettings", "OnReload", "OnHelp", "OnExitItem"] {
+            "OnSelectAll", "OnDebugLogging", "OnOpenLogFolder", "OnEditSettings", "OnReload", "OnForgetSettings", "OnHelp", "OnExitItem"] {
             callback := ObjBindMethod(this, name)
             if !callback {
                 throw Error("Failed to bind " . name, A_ThisFunc)
@@ -290,6 +354,11 @@ class TrayMenu {
         this._troubleMenu.Add(TrayMenu.OPEN_LOG_ITEM, cb["OnOpenLogFolder"])
         this._troubleMenu.Add(TrayMenu.EDIT_ITEM, cb["OnEditSettings"])
         this._troubleMenu.Add(TrayMenu.RELOAD_ITEM, cb["OnReload"])
+        this._troubleMenu.Add()
+        this._troubleMenu.Add(TrayMenu.FORGET_ITEM, cb["OnForgetSettings"])
+        if !this._store.IsEnabled() {
+            this._troubleMenu.Disable(TrayMenu.FORGET_ITEM)  ; NOTE: SAVE_SETTINGS is off, so nothing is saved
+        }
         m := this._menu
         m.Delete()
         m.Add(TrayMenu.TYPE_ITEM, cb["OnTypeClipboard"])
@@ -341,7 +410,9 @@ class TrayMenu {
     OnAfterTyping(itemName, *) {
         for choice in TrayMenu.AFTER_CHOICES {
             if choice.item = itemName {
-                this._typer.SetAfterTyping(choice.key)
+                if this._typer.SetAfterTyping(choice.key) {
+                    this._Save("AfterTyping", choice.key = "" ? "Nothing" : choice.key)
+                }
                 if choice.key != "" && this._typer.IsStepMode() {
                     this._typer.ShowNotice("Step mode: each press types a line, then presses " . choice.key . ".", 4000)
                 }
@@ -355,7 +426,9 @@ class TrayMenu {
     OnSpeedPreset(itemName, *) {
         for preset in TrayMenu.SPEED_PRESETS {
             if this._PresetLabel(preset) = itemName {
-                this._sender.SetDelays(preset.delay, preset.press)
+                if this._sender.SetDelays(preset.delay, preset.press) {
+                    this._SaveSpeed()
+                }
                 break
             }
         }
@@ -455,6 +528,21 @@ class TrayMenu {
         return false
     }
 
+    ; Tray > Troubleshooting > Forget saved settings: deletes the .ini and goes back to the script's own
+    ; Speed and After typing, for this session and every restart.
+    OnForgetSettings(*) {
+        forgotten := this._store.Forget()
+        this._sender.SetDelays(this._defaults.delay, this._defaults.press)
+        this._typer.SetAfterTyping(this._defaults.after)
+        this.Refresh()
+        if forgotten {
+            this._Notice("Saved settings forgotten; using the script's Speed and After typing.")
+        } else {
+            this._Notice("Couldn't delete the saved settings file; they'll come back on restart" . this._ErrorHint() . ".")
+        }
+        return forgotten
+    }
+
     OnHelp(*) {
         return this._helpFn.Call()
     }
@@ -502,11 +590,17 @@ class TrayMenu {
         for preset in TrayMenu.SPEED_PRESETS {
             if preset.delay = value {
                 applied := this._sender.SetDelays(preset.delay, preset.press)
+                if applied {
+                    this._SaveSpeed()
+                }
                 this.Refresh()
                 return applied
             }
         }
         applied := this._sender.SetDelays(value, this._sender.GetPressMs())
+        if applied {
+            this._SaveSpeed()
+        }
         this.Refresh()
         return applied
     }
@@ -589,6 +683,24 @@ class TrayMenu {
         }
     }
 
+    _SaveSpeed() {
+        this._Save("KeyDelayMs", this._sender.GetDelayMs())
+        this._Save("KeyPressMs", this._sender.GetPressMs())
+    }
+
+    ; Saves one tray choice. The first failure says so once; the choice still applies until restart.
+    _Save(key, value) {
+        if this._store.Write(key, value) {
+            return true
+        }
+        if !this._saveWarned {
+            this._saveWarned := true
+            this._Notice("Couldn't save settings next to the script (folder read-only or file locked); this choice lasts until restart"
+                . this._ErrorHint() . ".")
+        }
+        return false
+    }
+
     _SetCheck(menuObj, itemName, isOn) {
         if isOn {
             menuObj.Check(itemName)
@@ -605,6 +717,79 @@ class TrayMenu {
         return this._logger.LastErrorWritten() ? " (see error.log)" : ""
     }
 
+    _LogError(caller, message, err := "") {
+        return this._logger.Error(caller, message, err)
+    }
+}
+
+
+class SettingsStore {
+    ; --- Properties ---
+    _path := ""             ; absolute path of the .ini file
+    _logger := ""
+    _enabled := true        ; SAVE_SETTINGS: when false the file is never read or written
+    _section := "Settings"
+
+    ; --- Constructor ---
+    __New(path, logWriter, enabled := true) {
+        if path = "" || !IsObject(logWriter) {
+            throw Error("SettingsStore needs a file path and a Logger", A_ThisFunc)
+        }
+        this._path := path
+        this._logger := logWriter
+        this._enabled := !!enabled
+    }
+
+    ; --- Public Methods ---
+    IsEnabled() {
+        return this._enabled
+    }
+
+    ; The saved value, or default when there is none, the file can't be read, or saving is off.
+    ; NOTE: IniRead keeps an inline "; comment" as part of the value, so comments go on their own line.
+    Read(key, default) {
+        if !this._enabled {
+            return default  ; guard: saving is off
+        }
+        try {
+            return IniRead(this._path, this._section, key, default)
+        } catch Error as e {
+            this._LogError(A_ThisFunc, e.Message, e)
+            return default
+        }
+    }
+
+    ; True when saved (or saving is off, so there's nothing to do).
+    ; NOTE: IniWrite creates the file as UTF-16, which is what the INI functions read correctly.
+    Write(key, value) {
+        if !this._enabled {
+            return true  ; guard: saving is off
+        }
+        try {
+            IniWrite(value, this._path, this._section, key)
+            return true
+        } catch Error as e {
+            this._LogError(A_ThisFunc, "Couldn't save " . key . ": " . e.Message, e)
+            return false
+        }
+    }
+
+    ; Deletes the saved settings. True when nothing is saved afterwards (also when nothing was saved).
+    Forget() {
+        if !this._enabled || !FileExist(this._path) {
+            return true  ; guard: nothing to forget
+        }
+        try FileSetAttrib("-R", this._path)
+        try {
+            FileDelete(this._path)
+            return true
+        } catch Error as e {
+            this._LogError(A_ThisFunc, "Couldn't delete " . this._path . ": " . e.Message, e)
+            return false
+        }
+    }
+
+    ; --- Private Methods ---
     _LogError(caller, message, err := "") {
         return this._logger.Error(caller, message, err)
     }

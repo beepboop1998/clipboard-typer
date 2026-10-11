@@ -1,7 +1,8 @@
 /*
     RunTests.ahk
     Responsibility: Runs Unit.ahk, then E2E.ahk against copies of ClipboardTyper.ahk in Raw mode, Text mode,
-                    step mode and with After typing: Enter, and writes everything to tests\results.txt.
+                    step mode, with After typing: Enter and with saved settings, and writes everything to
+                    tests\results.txt.
     Dependencies: Unit.ahk, E2E.ahk, TestTarget.ahk, LeakProbe.ahk (optional), ..\ClipboardTyper.ahk
     Author: reuben
     Usage: double-click. Arguments (optional, any order):
@@ -21,14 +22,16 @@ resultsFile := A_ScriptDir . "\results.txt"
 workDir := A_Temp . "\ClipboardTyperTests"
 
 ; One end-to-end pass per entry, in this order. Each pass runs a copy of the script with these settings
-; (plus SHOW_STARTUP_TIP := false and DEBUG_LOG := true) and the E2E suite of the same name.
-PASS_ORDER := ["Raw", "Text", "Step", "Enter", "StepEnter"]
+; (plus SHOW_STARTUP_TIP := false, DEBUG_LOG := true and, unless the pass says otherwise, SAVE_SETTINGS := false)
+; and the E2E suite of the same name.
+PASS_ORDER := ["Raw", "Text", "Step", "Enter", "StepEnter", "Saved"]
 PASS_SETTINGS := Map(
     "Raw",  Map("SEND_MODE", '"Raw"',  "STEP_MODE", "false"),
     "Text", Map("SEND_MODE", '"Text"', "STEP_MODE", "false"),
     "Step", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "true"),
     "Enter", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "false", "AFTER_TYPING", '"Enter"'),
-    "StepEnter", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "true", "AFTER_TYPING", '"Enter"'))
+    "StepEnter", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "true", "AFTER_TYPING", '"Enter"'),
+    "Saved", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "false", "SAVE_SETTINGS", "true"))
 
 ; Guard: a running ClipboardTyper would also answer the test hotkey
 DetectHiddenWindows(true)
@@ -52,7 +55,7 @@ try FileDelete(resultsFile)
 DirCreate(workDir)
 try FileDelete(workDir . "\error.log")
 try FileDelete(workDir . "\error.old.log")
-for name in ["debug.log", "debug.old.log", "error.log", "error.old.log"] {
+for name in ["debug.log", "debug.old.log", "error.log", "error.old.log", "Unit.ini"] {
     try FileDelete(A_ScriptDir . "\" . name)  ; NOTE: Unit.ahk is the main script there, so its logs land in tests\
 }
 
@@ -78,6 +81,16 @@ for pass in PASS_ORDER {
     }
     for name in ["debug.log", "debug.old.log"] {
         try FileDelete(workDir . "\" . name)  ; NOTE: each pass checks only its own debug lines
+    }
+    Loop Files workDir . "\*.ini" {
+        try FileDelete(A_LoopFileFullPath)  ; NOTE: a stray saved-settings file must not change a pass
+    }
+    if pass = "Saved" {
+        ; NOTE: IniWrite on a new file makes it UTF-16, which the INI functions read; FileAppend "UTF-8" would not
+        savedIni := RegExReplace(copyPath, "\.ahk$", ".ini")
+        IniWrite(60, savedIni, "Settings", "KeyDelayMs")
+        IniWrite(20, savedIni, "Settings", "KeyPressMs")
+        IniWrite("Enter", savedIni, "Settings", "AfterTyping")
     }
     Run('"' . ahk . '" "' . A_ScriptDir . '\TestTarget.ahk" CT_Target 40', , , &targetPid)
     Run('"' . ahk . '" "' . A_ScriptDir . '\TestTarget.ahk" CT_Other 440', , , &otherPid)
@@ -115,8 +128,8 @@ Finish("Passed: " . passes . "   Failed: " . fails . "`n`nDetails: tests\results
 ; line fails loudly instead of silently testing the defaults.
 MakeTestCopy(source, pass, settings) {
     copy := source
-    fixed := Map("SHOW_STARTUP_TIP", "false", "DEBUG_LOG", "true")
-    for table in [settings, fixed] {
+    fixed := Map("SHOW_STARTUP_TIP", "false", "DEBUG_LOG", "true", "SAVE_SETTINGS", "false")
+    for table in [fixed, settings] {  ; NOTE: the pass's own settings last, so they win (Saved turns SAVE_SETTINGS on)
         for name, value in table {
             copy := RegExReplace(copy, 'm)^' . name . ' := (?:"\w*"|\w+)', name . " := " . value, &hits)
             if hits != 1 {

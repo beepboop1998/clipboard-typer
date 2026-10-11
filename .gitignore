@@ -3,3 +3,4 @@ debug.log
 *.old.log
 tests/results.txt
 *.bak
+*.ini

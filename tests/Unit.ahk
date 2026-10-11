@@ -13,6 +13,7 @@
 SetWorkingDir(A_WinDir . "\System32")
 resultsFile := A_Args.Length >= 1 ? A_Args[1] : A_ScriptDir . "\results.txt"
 OnError(UnitHarnessError, -1)  ; NOTE: registered first, so it also catches errors in the included startup
+try FileDelete(A_ScriptDir . "\Unit.ini")  ; NOTE: before the include, whose startup applies saved settings
 #Include %A_ScriptDir%\..\ClipboardTyper.ahk
 OnError(OnUnhandledError, 0)   ; NOTE: the app's handler would swallow this file's errors silently
 
@@ -78,7 +79,7 @@ Check("tray top level", MenuNames(hTray), "Type clipboard|Step mode (one line pe
 Check("tray Speed", MenuNames(hSpeed), "Fast (10 ms)|Normal (20 ms)|Slow (40 ms)|Very slow (80 ms)|-|Custom...")
 Check("Speed starts on KEY_DELAY_MS/KEY_PRESS_MS", TickedItems(hSpeed), startItem)
 Check("tray Step options", MenuNames(hStep), "Show typed text|Select field text first (Ctrl+A)")
-Check("tray Troubleshooting", MenuNames(hTrouble), "Debug logging|-|Open log folder|Edit script settings|Reload script")
+Check("tray Troubleshooting", MenuNames(hTrouble), "Debug logging|-|Open log folder|Edit script settings|Reload script|-|Forget saved settings")
 Check("double-click runs Type clipboard", A_TrayMenu.Default, TrayMenu.TYPE_ITEM)
 Check("tray tip comes from _TipText", tray._TipText(), A_IconTip)
 
@@ -146,7 +147,7 @@ for preset in TrayMenu.SPEED_PRESETS {
 Check("tray tip names a non-default speed", InStr(A_IconTip, "very slow") ? "yes" : "no: " . A_IconTip, "yes")
 Check("debug start line shows the speed in use", InStr(DebugStartFields(), " delay=80 press=30 ") ? "yes" : "no: " . DebugStartFields(), "yes")
 tray.OnSpeedPreset("Normal (20 ms)")
-Check("tray tip leaves Normal out", A_IconTip, "Clipboard Typer " . VERSION . " (" . DescribeHotkey(HOTKEY_TYPE_CLIPBOARD) . ")")
+Check("tray tip leaves Normal out", InStr(A_IconTip, "normal") ? "no: " . A_IconTip : "yes", "yes")
 
 ; Custom speed: whole ms from 0 to 1000; a preset's delay applies that whole preset
 Check("custom 25 applied", tray._ApplyCustomDelay("25") ? "yes" : "no", "yes")
@@ -346,6 +347,75 @@ try {
     SendEvent("{Blind}{LShift up}")  ; NOTE: also clears this script's own record of the key
 }
 Check("nothing to release when no modifier is down", unitSender.ReleaseStuckModifiers(), 0)
+
+; Saved settings: a store in the temp folder, fixtures written with IniWrite (never FileAppend: a UTF-8
+; BOM would hide [Settings] from the INI functions)
+iniPath := unitDir . "\saved.ini"
+unitStore := SettingsStore(iniPath, unitLog, true)
+Check("store round trip", (unitStore.Write("KeyDelayMs", 40) && unitStore.Read("KeyDelayMs", "x") = "40") ? "yes" : "no", "yes")
+Check("store default for a missing key", unitStore.Read("NoSuchKey", "dflt"), "dflt")
+Check("store write into a missing folder fails", SettingsStore(unitDir . "\no-such-folder\x.ini", unitLog, true).Write("KeyDelayMs", 1) ? "saved" : "failed", "failed")
+Check("the failed write is logged", InStr(FileRead(unitDir . "\error.log"), "Couldn't save KeyDelayMs") ? "yes" : "no", "yes")
+FileDelete(iniPath)
+for c in [["abc", "", "20/10 Enter", "corrupt speed keeps the script's"],
+    ["", "Space", "20/10 Enter", "unknown AfterTyping keeps the script's"],
+    ["", "Nothing", "20/10 ", "saved Nothing overrides AFTER_TYPING Enter"],
+    ["", "enter", "20/10 Enter", "AfterTyping in any case"],
+    ["", "Tab `; note", "20/10 Enter", "an inline comment makes the value invalid"],
+    ["60", "Tab", "60/10 Tab", "saved speed and Tab applied"]] {
+    try FileDelete(iniPath)
+    if c[1] != "" {
+        IniWrite(c[1], iniPath, "Settings", "KeyDelayMs")
+    }
+    if c[2] != "" {
+        IniWrite(c[2], iniPath, "Settings", "AfterTyping")
+    }
+    probeSender := InputSender("Raw", 20, 10, unitLog)
+    probeTyper := ClipboardTyper(probeSender, unitLog, 2000, 10, 300, false, true, 1500, false, "Enter")
+    ApplySavedSettings(SettingsStore(iniPath, unitLog, true), probeSender, probeTyper, unitLog)
+    Check("saved settings: " . c[4], probeSender.GetDelayMs() . "/" . probeSender.GetPressMs() . " " . probeTyper.GetAfterTyping(), c[3])
+}
+FileDelete(iniPath)
+IniWrite(40, iniPath, "Settings", "KeyDelayMs")
+probeSender := InputSender("Raw", 20, 10, unitLog)
+probeTyper := ClipboardTyper(probeSender, unitLog, 2000, 10, 300)
+Check("SAVE_SETTINGS off: nothing is read", SettingsStore(iniPath, unitLog, false).Read("KeyDelayMs", "x"), "x")
+Check("SAVE_SETTINGS off: the script's speed stays", (ApplySavedSettings(SettingsStore(iniPath, unitLog, false), probeSender, probeTyper, unitLog) . " " . probeSender.GetDelayMs()), "script 20")
+Check("Forget deletes the file", (unitStore.Forget() && !FileExist(iniPath)) ? "yes" : "no", "yes")
+errorSize := FileGetSize(unitDir . "\error.log")
+Check("Forget with nothing saved is fine, twice", (unitStore.Forget() && unitStore.Forget() && FileGetSize(unitDir . "\error.log") = errorSize) ? "yes" : "no", "yes")
+IniWrite(1, iniPath, "Settings", "KeyDelayMs")
+FileSetAttrib("+R", iniPath)
+Check("Forget deletes a read-only file", (unitStore.Forget() && !FileExist(iniPath)) ? "yes" : "no", "yes")
+IniWrite(1, iniPath, "Settings", "KeyDelayMs")
+lockedIni := FileOpen(iniPath, "r -rwd")  ; NOTE: as OneDrive or a virus scanner might hold it
+errorSize := FileGetSize(unitDir . "\error.log")
+Check("Forget of a locked file fails and is logged", (unitStore.Forget() ? "deleted" : "failed") . (FileGetSize(unitDir . "\error.log") > errorSize ? " logged" : " not logged"), "failed logged")
+lockedIni.Close()
+try FileDelete(iniPath)
+
+; The real tray saves what you pick and Forget goes back to the script's settings
+trayIni := SettingsPath()
+if SAVE_SETTINGS {
+    tray.OnSpeedPreset("Slow (40 ms)")
+    tray.OnAfterTyping("Press Tab")
+    Check("tray saves speed and After typing", IniRead(trayIni, "Settings", "KeyDelayMs", "-") . "/" . IniRead(trayIni, "Settings", "KeyPressMs", "-") . " " . IniRead(trayIni, "Settings", "AfterTyping", "-"), "40/20 Tab")
+    tray.OnAfterTyping("Nothing")
+    Check("tray saves Nothing explicitly", IniRead(trayIni, "Settings", "AfterTyping", "-"), "Nothing")
+    tray.OnForgetSettings()
+    Check("Forget saved settings restores the script's settings", (FileExist(trayIni) ? "file kept " : "") . sender.GetDelayMs() . "/" . sender.GetPressMs() . " " . TickedItems(hSpeed) . " " . typer.GetAfterTyping(),
+        scriptDefaults.delay . "/" . scriptDefaults.press . " " . startItem . " " . startAfterKey)
+    IniWrite("enter", trayIni, "Settings", "AfterTyping")
+    ApplySavedSettings(store, sender, typer, appLog)
+    tray.Refresh()
+    Check("saved enter shows in the tray as Enter", TickedItems(hAfter) . " / " . (InStr(MenuNames(hTray), "|After typing: Enter|") ? "labelled" : "not labelled"), "Press Enter / labelled")
+    tray.OnForgetSettings()
+} else {
+    ; NOTE: SAVE_SETTINGS := false in the script: tray choices must never create the file
+    tray.OnSpeedPreset("Slow (40 ms)")
+    Check("SAVE_SETTINGS off: the tray saves nothing", FileExist(trayIni) ? "saved" : "nothing saved", "nothing saved")
+    tray.OnForgetSettings()
+}
 try DirDelete(unitDir, true)
 
 ; Help: open it the way the tray menu does, read the dialog, close it
@@ -357,6 +427,7 @@ helpTitle := "Clipboard Typer " . VERSION . ": How to use"
 SetTimer(GrabHelp, -600)
 ShowHelp()
 Out("PASS Unit completed")
+try FileDelete(A_ScriptDir . "\Unit.ini")
 ExitApp()
 
 GrabHelp() {
@@ -373,6 +444,7 @@ GrabHelp() {
     Check("help says how to apply edited settings", InStr(text, "Reload script") ? "yes" : "no", "yes")
     Check("help points dropped characters to Speed", (InStr(text, "Speed > Slow") && !InStr(text, "Raise KEY_DELAY_MS")) ? "yes" : "no", "yes")
     Check("help explains After typing", InStr(text, "After typing") ? "yes" : "no", "yes")
+    Check("help mentions Forget saved settings", InStr(text, "Forget saved settings") ? "yes" : "no", "yes")
 }
 
 ; --- Menu inspection (Win32), so the checks see the menu the user sees ---

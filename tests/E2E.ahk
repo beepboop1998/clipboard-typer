@@ -37,6 +37,8 @@ try {
             RunEnterSuite()
         case "StepEnter":
             RunStepEnterSuite()
+        case "Saved":
+            RunSavedSuite()
         default:
             Check("known pass name", false, "no suite for pass '" . label . "'")
     }
@@ -312,6 +314,18 @@ RunStepEnterSuite() {
     Check("S11 a stopped step line gets no Enter", IsPartial(got, longLine) && other == "" && LogHas("DEBUG after key=Enter result=skipped-stopped", mark), StrLen(got) . "/80 chars, other=" . Show(other) . "; " . LogTail(mark))
     got := StepPress()
     Check("S11 the retyped line gets no Enter either", got == longLine && LogHas("DEBUG after key=Enter result=skipped-retry", mark), "got " . StrLen(got) . " chars" . (InStr(got, "`n") ? " with a line break" : "") . "; " . LogTail(mark))
+}
+
+; The "Saved" pass starts the typer with SAVE_SETTINGS on and a saved .ini (written by RunTests):
+; KeyDelayMs=60, KeyPressMs=20, AfterTyping=Enter. The script itself says 20/10 and no key.
+RunSavedSuite() {
+    ; P1 saved settings win over the script's: the start line shows the saved speed, and Enter follows the text
+    Clear()
+    Trigger("abc")
+    ClickIn("CT_Target")
+    got := WaitIdle("CT_Target")
+    Check("P1 saved After typing: Enter applies", got == "abc`r`n", "got=" . Show(got))
+    Check("P1 saved speed applies", LogHas("DEBUG start .* delay=60 press=20 source=ini"), LogTail())
 }
 
 ; Copies the list, presses the hotkey in the target field, and returns once the first line has started typing.

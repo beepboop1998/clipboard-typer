@@ -58,7 +58,34 @@ RunSuite() {
     ClickIn("CT_Target")
     got := WaitIdle("CT_Target")
     Check("T1 symbols/tab/newline typed exactly, trailing CRLF dropped", got == "Hello {World}! ^+#`r`nline2`tTab @`"q`" ~%``;", "got=" . Show(got))
-    Check("T1 debug log: stop=done", LogHas("DEBUG typed (\d+)/\1 stop=done", mark), LogTail(mark))
+    Check("T1 debug log: stop=done", LogHas("DEBUG typed (\d+)/\1 ms=\d+ cps=\S+ stop=done", mark), LogTail(mark))
+    if speed := LogMatch("DEBUG typed (\d+)/\1 ms=(\d+) cps=(\S+) stop=done", mark) {
+        Out("INFO " . label . " pass speed at Normal: " . speed[3] . " chars/s (" . speed[1] . " chars in " . speed[2] . " ms)")
+    }
+
+    ; V1 each Speed preset, picked at runtime through the tray's own callback (test-only hotkeys
+    ;    Ctrl+Shift+Alt+1..4), types slower than the one before it; the same plain text every time
+    ladder := ""
+    last := 1000000
+    ordered := true
+    for key in ["1", "2", "3", "4"] {  ; Fast, Normal, Slow, Very slow
+        Send("^+!" . key)
+        Sleep(300)
+        Clear()
+        mark := LogMark()
+        Trigger("abcdefghijklmnopqrstuvwxyzabcd")
+        ClickIn("CT_Target")
+        got := WaitIdle("CT_Target")
+        speed := LogMatch("DEBUG typed 30/30 ms=\d+ cps=([\d.]+) stop=done", mark)
+        cps := speed ? speed[1] + 0 : -1
+        ordered := ordered && got == "abcdefghijklmnopqrstuvwxyzabcd" && cps > 0 && cps < last
+        last := cps
+        ladder .= (ladder = "" ? "" : " > ") . (speed ? speed[1] : "none")
+    }
+    Send("^+!2")  ; NOTE: back to Normal for the tests below
+    Sleep(300)
+    Check("V1 Fast > Normal > Slow > Very slow, picked from the tray at runtime", ordered, ladder . " chars/s")
+    Out("INFO " . label . " pass speed ladder (Fast > Normal > Slow > Very slow): " . ladder . " chars/s")
 
     ; T2 Esc cancels the wait, and a retry straight after works (notices don't block the hotkey)
     Clear()
@@ -84,7 +111,7 @@ RunSuite() {
     ClickIn("CT_Target")
     got := WaitIdle("CT_Target")
     Check("T3 click during typing stops it", IsPartial(got, longText), StrLen(got) . "/80 chars")
-    Check("T3 debug log: stop=click", LogHas("DEBUG typed \d+/80 stop=click", mark), LogTail(mark))
+    Check("T3 debug log: stop=click", LogHas("DEBUG typed \d+/80 ms=\d+ cps=\S+ stop=click", mark), LogTail(mark))
 
     ; T4 Esc during typing stops it
     Clear()
@@ -95,7 +122,7 @@ RunSuite() {
     Send("{Esc}")
     got := WaitIdle("CT_Target")
     Check("T4 Esc during typing stops it", IsPartial(got, longText), StrLen(got) . "/80 chars")
-    Check("T4 debug log: stop=esc", LogHas("DEBUG typed \d+/80 stop=esc", mark), LogTail(mark))
+    Check("T4 debug log: stop=esc", LogHas("DEBUG typed \d+/80 ms=\d+ cps=\S+ stop=esc", mark), LogTail(mark))
 
     ; T5 another window taking focus stops it
     ; NOTE: rarely one char can land in the other window (check-then-send race); LeakProbe.ahk measures the rate
@@ -108,7 +135,7 @@ RunSuite() {
     got := WaitIdle("CT_Target")
     other := ControlGetText("Edit1", "CT_Other")
     Check("T5 focus loss stops it, other window untouched", IsPartial(got, longText) && other == "", StrLen(got) . "/80 chars, other=" . Show(other))
-    Check("T5 debug log: stop=focus", LogHas("DEBUG typed \d+/80 stop=focus", mark), LogTail(mark))
+    Check("T5 debug log: stop=focus", LogHas("DEBUG typed \d+/80 ms=\d+ cps=\S+ stop=focus", mark), LogTail(mark))
 
     ; T6 over the limit and empty clipboard type nothing
     Clear()
@@ -298,6 +325,16 @@ LogHas(pattern, mark := 0) {
         }
     }
     return false
+}
+
+; The first match after mark (a RegExMatch object), or "" when none.
+LogMatch(pattern, mark := 0) {
+    for line in StrSplit(ReadIfExists(debugLog), "`n", "`r") {
+        if A_Index > mark && RegExMatch(line, pattern, &match) {
+            return match
+        }
+    }
+    return ""
 }
 
 ; The debug lines after mark, for a FAIL line's details.

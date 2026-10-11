@@ -123,6 +123,15 @@ MakeTestCopy(source, pass, settings) {
             }
         }
     }
+    ; NOTE: test copies only: Ctrl+Shift+Alt+1..4 pick Fast, Normal, Slow and Very slow through the
+    ;       tray's own callback, so E2E can change the speed at runtime the way a user does
+    copy .= "`r`n`r`n; --- Added by RunTests.ahk (test copy only) ---`r`n"
+        . 'for i, key in ["1", "2", "3", "4"] {`r`n'
+        . '    Hotkey("^+!" . key, TestPickSpeed.Bind(i))`r`n'
+        . '}`r`n'
+        . 'TestPickSpeed(i, *) {`r`n'
+        . '    tray.OnSpeedPreset(tray._PresetLabel(TrayMenu.SPEED_PRESETS[i]))`r`n'
+        . '}`r`n'
     copyPath := workDir . "\ClipboardTyper.test-" . pass . ".ahk"
     try FileDelete(copyPath)
     FileAppend(copy, copyPath, "UTF-8")

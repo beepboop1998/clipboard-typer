@@ -24,8 +24,8 @@ VERSION := "1.1.0"
 HOTKEY_TYPE_CLIPBOARD := "^+!v"  ; Ctrl+Shift+Alt+V  (^ Ctrl, + Shift, ! Alt, # Win)
 SEND_MODE := "Raw"               ; "Raw": real key presses; works in most remote consoles, needs the same keyboard layout on both ends
                                  ; "Text": Unicode characters; layout-independent, but many remote viewers ignore them
-KEY_DELAY_MS := 20               ; pause after each keystroke; raise to 40-50 if the session drops characters
-KEY_PRESS_MS := 10               ; how long each key is held down
+KEY_DELAY_MS := 20               ; starting speed: pause after each keystroke, 0-1000 ms (change any time: tray icon > Speed)
+KEY_PRESS_MS := 10               ; starting speed: how long each key is held down, 0-1000 ms
 MAX_CHARS := 2000                ; refuse anything longer than this
 CLICK_TIMEOUT_SEC := 10          ; how long to wait for the click on the target field
 FOCUS_SETTLE_MS := 300           ; give the remote field time to take focus after the click
@@ -65,7 +65,7 @@ Hotkey("*Esc", cancelCallback)
 HotIf()
 
 hotkeyLabel := DescribeHotkey(HOTKEY_TYPE_CLIPBOARD)
-tray := TrayMenu(A_TrayMenu, typer, appLog, ShowHelp, DebugStartFields, VERSION, hotkeyLabel)
+tray := TrayMenu(A_TrayMenu, typer, sender, appLog, ShowHelp, DebugStartFields, VERSION, hotkeyLabel)
 tray.Build()
 OnExit(OnScriptExit)
 OnError(OnUnhandledError)  ; NOTE: last, so an invalid setting above still shows AutoHotkey's error dialog at startup
@@ -134,7 +134,7 @@ DebugStartFields() {
     klid := Buffer(9 * 2, 0)  ; NOTE: the full layout ID, e.g. 00020409 for US-International, not just the language
     try layout := DllCall("GetKeyboardLayoutNameW", "Ptr", klid, "Int") ? StrGet(klid, "UTF-16") : ""
     return "ver=" . VERSION . " ahk=" . A_AhkVersion . " os=" . A_OSVersion . " admin=" . (A_IsAdmin ? 1 : 0)
-        . " mode=" . SEND_MODE . " delay=" . KEY_DELAY_MS . " press=" . KEY_PRESS_MS
+        . " mode=" . SEND_MODE . " delay=" . sender.GetDelayMs() . " press=" . sender.GetPressMs()
         . " step=" . (typer.IsStepMode() ? 1 : 0) . " layout=" . layout
 }
 
@@ -152,7 +152,7 @@ ShowHelp(*) {
         . "the tray icon still type everything. The status shows only the line number; tick tray icon > Step options > Show typed text "
         . "to see the line itself, and leave it off for passwords.`n`n"
         . "Wrong symbols? The remote keyboard layout differs from yours; try SEND_MODE := `"Text`".`n"
-        . "Characters dropped? Raise KEY_DELAY_MS.`n"
+        . "Characters dropped? Tray icon > Speed > Slow (or Very slow).`n"
         . "Settings are the constants near the top of the script: tray icon > Troubleshooting > Edit script settings, "
         . "save, then Troubleshooting > Reload script. Errors go to error.log next to the script; "
         . "Troubleshooting > Debug logging records more in debug.log.",
@@ -164,6 +164,15 @@ class TrayMenu {
     ; --- Labels ---
     static TYPE_ITEM := "Type clipboard"
     static STEP_ITEM := "Step mode (one line per press)"
+    static SPEED_PREFIX := "Speed: "         ; the Speed item's label is this plus the current speed
+    static CUSTOM_SPEED_ITEM := "Custom..."
+    ; NOTE: labelled by delay, not a rate: each pause is rounded up to the system timer step (10-16 ms)
+    ;       and Text mode ignores the press time, so a fixed characters-per-second figure would be wrong
+    static SPEED_PRESETS := [
+        {name: "Fast", delay: 10, press: 5},
+        {name: "Normal", delay: 20, press: 10},
+        {name: "Slow", delay: 40, press: 20},
+        {name: "Very slow", delay: 80, press: 30}]
     static STEP_OPTIONS_ITEM := "Step options"
     static SHOW_TEXT_ITEM := "Show typed text"
     static SELECT_ALL_ITEM := "Select field text first (Ctrl+A)"
@@ -178,11 +187,16 @@ class TrayMenu {
     ; --- Properties ---
     _menu := ""             ; the tray menu (A_TrayMenu), passed in
     _typer := ""
+    _sender := ""
     _logger := ""
     _helpFn := ""
     _startFieldsFn := ""    ; returns the fields of the debug log's "start" line
     _version := ""
     _hotkeyLabel := ""
+    _speedMenu := ""
+    _speedItemName := ""    ; the Speed item's current label
+    _speedItemPos := ""     ; the Speed item's position ("4&"): Rename by position can't miss after a failed rename
+    _menuWarned := false    ; the "couldn't update the menu" notice shows once
     _stepMenu := ""
     _troubleMenu := ""
     _callbacks := ""        ; method name -> callback bound to this, bound once
@@ -190,25 +204,27 @@ class TrayMenu {
     ; --- Constructor ---
     ; NOTE: the first parameter is neither "menu" nor "trayMenu": names ignore case, so either would hide
     ;       the Menu class or this TrayMenu class inside the constructor
-    __New(rootMenu, typer, logWriter, helpFn, startFieldsFn, version, hotkeyLabel) {
-        if !IsObject(rootMenu) || !IsObject(typer) || !IsObject(logWriter) {
-            throw Error("TrayMenu needs the tray menu, the typer and a Logger", A_ThisFunc)
+    __New(rootMenu, typer, sender, logWriter, helpFn, startFieldsFn, version, hotkeyLabel) {
+        if !IsObject(rootMenu) || !IsObject(typer) || !IsObject(sender) || !IsObject(logWriter) {
+            throw Error("TrayMenu needs the tray menu, the typer, the InputSender and a Logger", A_ThisFunc)
         }
         if !HasMethod(helpFn) || !HasMethod(startFieldsFn) {
             throw Error("TrayMenu needs the help and debug-start functions", A_ThisFunc)
         }
         this._menu := rootMenu
         this._typer := typer
+        this._sender := sender
         this._logger := logWriter
         this._helpFn := helpFn
         this._startFieldsFn := startFieldsFn
         this._version := version
         this._hotkeyLabel := hotkeyLabel
+        this._speedMenu := Menu()
         this._stepMenu := Menu()
         this._troubleMenu := Menu()
         this._callbacks := Map()
-        for name in ["OnTypeClipboard", "OnStepMode", "OnShowText", "OnSelectAll", "OnDebugLogging",
-            "OnOpenLogFolder", "OnEditSettings", "OnReload", "OnHelp", "OnExitItem"] {
+        for name in ["OnTypeClipboard", "OnStepMode", "OnSpeedPreset", "OnCustomSpeed", "OnShowText", "OnSelectAll",
+            "OnDebugLogging", "OnOpenLogFolder", "OnEditSettings", "OnReload", "OnHelp", "OnExitItem"] {
             callback := ObjBindMethod(this, name)
             if !callback {
                 throw Error("Failed to bind " . name, A_ThisFunc)
@@ -221,6 +237,12 @@ class TrayMenu {
     ; Replaces AutoHotkey's own tray items (Open, Window Spy, Suspend, ...) with the app's menu.
     Build() {
         cb := this._callbacks
+        this._speedMenu.Delete()
+        for preset in TrayMenu.SPEED_PRESETS {
+            this._speedMenu.Add(this._PresetLabel(preset), cb["OnSpeedPreset"], "Radio")
+        }
+        this._speedMenu.Add()
+        this._speedMenu.Add(TrayMenu.CUSTOM_SPEED_ITEM, cb["OnCustomSpeed"], "Radio")
         this._stepMenu.Delete()
         this._stepMenu.Add(TrayMenu.SHOW_TEXT_ITEM, cb["OnShowText"])
         this._stepMenu.Add(TrayMenu.SELECT_ALL_ITEM, cb["OnSelectAll"])
@@ -235,6 +257,9 @@ class TrayMenu {
         m.Add(TrayMenu.TYPE_ITEM, cb["OnTypeClipboard"])
         m.Add(TrayMenu.STEP_ITEM, cb["OnStepMode"])
         m.Add()
+        this._speedItemName := this._SpeedLabel()
+        m.Add(this._speedItemName, this._speedMenu)
+        this._speedItemPos := "4&"  ; NOTE: after Type clipboard, Step mode and the separator
         m.Add(TrayMenu.STEP_OPTIONS_ITEM, this._stepMenu)
         m.Add(TrayMenu.TROUBLE_ITEM, this._troubleMenu)
         m.Add()
@@ -254,6 +279,7 @@ class TrayMenu {
         } catch Error as e {
             this._LogError(A_ThisFunc, e.Message, e)
         }
+        this._SyncSpeed()
         A_IconTip := this._TipText()
     }
 
@@ -265,6 +291,39 @@ class TrayMenu {
     OnStepMode(*) {
         this._typer.ToggleStepMode()
         this.Refresh()
+    }
+
+    ; Tray > Speed > a preset. Applies from the next run (opening the tray menu takes focus, which stops a run).
+    OnSpeedPreset(itemName, *) {
+        for preset in TrayMenu.SPEED_PRESETS {
+            if this._PresetLabel(preset) = itemName {
+                this._sender.SetDelays(preset.delay, preset.press)
+                break
+            }
+        }
+        this.Refresh()
+    }
+
+    ; Tray > Speed > Custom...: asks for the pause between keys. Cancel changes nothing.
+    OnCustomSpeed(*) {
+        try {
+            box := InputBox("Milliseconds between keys (0-1000). Now: " . this._sender.GetDelayMs()
+                . "`nHigher is slower; raise it if the session drops characters.", "Clipboard Typer: custom speed", "w320 h150", this._sender.GetDelayMs())
+        } catch Error as e {
+            this._LogError(A_ThisFunc, e.Message, e)
+            this._Notice("Couldn't open the custom speed box" . this._ErrorHint() . ".")
+            this.Refresh()
+            return false
+        }
+        if box.Result != "OK" {
+            this.Refresh()  ; NOTE: Cancel or timeout; also puts the radio dot back where it was
+            return false
+        }
+        if !this._ApplyCustomDelay(box.Value) {
+            try MsgBox("Enter a whole number of milliseconds from 0 to 1000. The speed wasn't changed.", "Clipboard Typer: custom speed", "Icon!")
+            return false
+        }
+        return true
     }
 
     OnShowText(*) {
@@ -361,11 +420,86 @@ class TrayMenu {
         if this._logger.IsDebugEnabled() {
             states.Push("debug logging")
         }
+        speed := this._SpeedName()
+        if speed != "Normal" {
+            states.Push(StrLower(speed))
+        }
         tip := "Clipboard Typer " . this._version . " (" . this._hotkeyLabel . ")"
         for i, state in states {
             tip .= (i = 1 ? " - " : ", ") . state
         }
         return SubStr(tip, 1, 127)
+    }
+
+    ; Custom speed: a whole number of ms from 0 to 1000. A value equal to a preset's delay applies that
+    ; whole preset (press time too), so the ticked item always describes the real speed. True if applied.
+    _ApplyCustomDelay(value) {
+        if !this._sender.IsValidDelay(value) {
+            return false  ; guard: not a valid delay (the same rule as KEY_DELAY_MS)
+        }
+        value := Integer(Trim(value))
+        for preset in TrayMenu.SPEED_PRESETS {
+            if preset.delay = value {
+                applied := this._sender.SetDelays(preset.delay, preset.press)
+                this.Refresh()
+                return applied
+            }
+        }
+        applied := this._sender.SetDelays(value, this._sender.GetPressMs())
+        this.Refresh()
+        return applied
+    }
+
+    ; The preset matching the current delay and press time, or "" for a custom speed.
+    _CurrentPreset() {
+        for preset in TrayMenu.SPEED_PRESETS {
+            if preset.delay = this._sender.GetDelayMs() && preset.press = this._sender.GetPressMs() {
+                return preset
+            }
+        }
+        return ""
+    }
+
+    _SpeedName() {
+        preset := this._CurrentPreset()
+        return IsObject(preset) ? preset.name : "Custom (" . this._sender.GetDelayMs() . " ms)"
+    }
+
+    _SpeedLabel() {
+        return TrayMenu.SPEED_PREFIX . this._SpeedName()
+    }
+
+    _PresetLabel(preset) {
+        return preset.name . " (" . preset.delay . " ms)"
+    }
+
+    ; Ticks exactly one Speed item (a preset only when both delay and press match it, otherwise Custom)
+    ; and renames the Speed item to show the current speed.
+    _SyncSpeed() {
+        current := this._CurrentPreset()
+        try {
+            for preset in TrayMenu.SPEED_PRESETS {
+                this._SetCheck(this._speedMenu, this._PresetLabel(preset), IsObject(current) && preset.name = current.name)
+            }
+            this._SetCheck(this._speedMenu, TrayMenu.CUSTOM_SPEED_ITEM, !IsObject(current))
+            label := this._SpeedLabel()
+            if this._speedItemPos != "" && label != this._speedItemName {
+                this._menu.Rename(this._speedItemPos, label)
+                this._speedItemName := label
+            }
+        } catch Error as e {
+            this._LogError(A_ThisFunc, e.Message, e)
+            this._WarnMenu()
+        }
+    }
+
+    ; One notice when the menu can't be updated; the setting itself still applies.
+    _WarnMenu() {
+        if this._menuWarned {
+            return  ; guard: told the user already
+        }
+        this._menuWarned := true
+        this._Notice("Couldn't update the tray menu; the setting still applies" . this._ErrorHint() . ".")
     }
 
     _SetCheck(menuObj, itemName, isOn) {
@@ -509,8 +643,8 @@ class InputSender {
         if sendMode != "Raw" && sendMode != "Text" {
             throw Error('SEND_MODE must be "Raw" or "Text", not "' . sendMode . '"', A_ThisFunc)
         }
-        if !IsNumber(keyDelayMs) || !IsNumber(pressMs) || keyDelayMs < 0 || pressMs < 0 {
-            throw Error("KEY_DELAY_MS and KEY_PRESS_MS must be numbers, 0 or more", A_ThisFunc)
+        if this._ToDelay(keyDelayMs) = "" || this._ToDelay(pressMs) = "" {
+            throw Error("KEY_DELAY_MS and KEY_PRESS_MS must be whole numbers from 0 to 1000", A_ThisFunc)
         }
         if !IsObject(logWriter) {
             throw Error("Logger is required", A_ThisFunc)
@@ -519,12 +653,40 @@ class InputSender {
         ;       char as VK_PACKET, which many remote viewers drop. With {Raw} the session's keyboard
         ;       layout must match this PC's, since the remote side turns key codes back into characters.
         this._sendPrefix := "{" . sendMode . "}"
-        this._keyDelayMs := keyDelayMs
-        this._pressMs := pressMs
+        this._keyDelayMs := this._ToDelay(keyDelayMs)
+        this._pressMs := this._ToDelay(pressMs)
         this._logger := logWriter
     }
 
     ; --- Public Methods ---
+    ; Changes the typing speed: pause after each key and how long each key is held, in ms (0 to 1000,
+    ; whole numbers or numeric strings). Takes effect from the next keystroke sent. False if rejected.
+    SetDelays(delayMs, pressMs) {
+        delay := this._ToDelay(delayMs)
+        press := this._ToDelay(pressMs)
+        if delay = "" || press = "" {
+            this._logger.Debug("setting", "speed=rejected")
+            return false
+        }
+        this._keyDelayMs := delay
+        this._pressMs := press
+        this._logger.Debug("setting", "speed=" . delay . "/" . press)
+        return true
+    }
+
+    GetDelayMs() {
+        return this._keyDelayMs
+    }
+
+    ; The one rule for a delay or press time (constants, tray, saved settings): a whole number of ms, 0-1000.
+    IsValidDelay(value) {
+        return this._ToDelay(value) != ""
+    }
+
+    GetPressMs() {
+        return this._pressMs
+    }
+
     ; Sends text literally at a pace remote consoles can keep up with.
     TypeText(text) {
         if text = "" {
@@ -605,6 +767,17 @@ class InputSender {
     }
 
     ; --- Private Methods ---
+    ; A delay or press time as a whole number of ms from 0 to 1000, or "" if it isn't one.
+    _ToDelay(value) {
+        if value is String {
+            value := Trim(value)
+        }
+        if !IsInteger(value) || value < 0 || value > 1000 {
+            return ""
+        }
+        return Integer(value)
+    }
+
     ; VK of a single character being sent: Enter and Tab in both modes, other characters in Raw mode only
     ; (Text mode sends them as VK_PACKET, which needs no release). 0 for longer text.
     _InFlightVkFor(text) {
@@ -923,6 +1096,7 @@ class ClipboardTyper {
         total := StrLen(text)
         typed := 0
         stop := "done"
+        startTick := A_TickCount
         Loop Parse text {
             ; NOTE: checked per character so a click, Esc, or focus change stops it mid-text
             if this._cancelled {
@@ -945,12 +1119,22 @@ class ClipboardTyper {
             }
             typed += 1
         }
-        this._Debug("typed", typed . "/" . total . " stop=" . stop)
+        ms := A_TickCount - startTick
+        ; NOTE: A_TickCount moves in 10-16 ms steps, so a very short run can measure 0 ms
+        this._Debug("typed", typed . "/" . total . " ms=" . ms . " cps=" . (ms < 1 ? "-" : Format("{:.1f}", typed * 1000 / ms)) . " stop=" . stop)
         if stop != "done" {
             return false
         }
-        this._Notify("Typed " . total . " chars")
+        this._Notify(this._DoneMessage(total, ms))
         return true
+    }
+
+    ; "Typed 42 chars in 1.4s (30/s)"; just "Typed 1 chars" when the run was too short to time.
+    _DoneMessage(chars, ms) {
+        if ms < 1 {
+            return "Typed " . chars . " chars"
+        }
+        return "Typed " . chars . " chars in " . Format("{:.1f}", ms / 1000) . "s (" . Round(chars * 1000 / ms) . "/s)"
     }
 
     ; Debug log: the program and window class of the target, never its title.

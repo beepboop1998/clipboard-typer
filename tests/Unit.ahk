@@ -21,13 +21,30 @@ Out("== Unit")
 for pair in [["^+!v", "Ctrl+Shift+Alt+V"], ["#v", "Win+V"], ["F8", "F8"], ["^Numpad1", "Ctrl+Numpad1"], ["$*~!F12", "Alt+F12"], ["", ""]] {
     Check("DescribeHotkey '" . pair[1] . "'", DescribeHotkey(pair[1]), pair[2])
 }
-Check("tray tip", A_IconTip, "Clipboard Typer " . VERSION . " (" . DescribeHotkey(HOTKEY_TYPE_CLIPBOARD) . ")" . (DEBUG_LOG ? " - debug logging" : ""))
+; NOTE: KEY_DELAY_MS/KEY_PRESS_MS pick the starting speed: Normal unless the script was edited
+startSpeed := "Custom (" . Round(KEY_DELAY_MS) . " ms)"
+startItem := TrayMenu.CUSTOM_SPEED_ITEM
+for preset in TrayMenu.SPEED_PRESETS {
+    if preset.delay = KEY_DELAY_MS && preset.press = KEY_PRESS_MS {
+        startSpeed := preset.name
+        startItem := preset.name . " (" . preset.delay . " ms)"
+    }
+}
+tipStates := ""
+for state in [DEBUG_LOG ? "debug logging" : "", startSpeed != "Normal" ? StrLower(startSpeed) : ""] {
+    if state != "" {
+        tipStates .= (tipStates = "" ? " - " : ", ") . state
+    }
+}
+Check("tray tip", A_IconTip, "Clipboard Typer " . VERSION . " (" . DescribeHotkey(HOTKEY_TYPE_CLIPBOARD) . ")" . tipStates)
 Check("Raw prefix", InputSender("Raw", 20, 10, appLog)._sendPrefix, "{Raw}")
 Check("Text prefix", InputSender("Text", 20, 10, appLog)._sendPrefix, "{Text}")
 
 Rejects("SEND_MODE 'Bogus'", () => InputSender("Bogus", 20, 10, appLog), "SEND_MODE")
 Rejects("KEY_DELAY_MS -5", () => InputSender("Raw", -5, 10, appLog), "KEY_DELAY_MS")
 Rejects("KEY_DELAY_MS 'fast'", () => InputSender("Raw", "fast", 10, appLog), "KEY_DELAY_MS")
+Rejects("KEY_PRESS_MS 1001", () => InputSender("Raw", 20, 1001, appLog), "KEY_PRESS_MS")
+Rejects("KEY_DELAY_MS 2.5", () => InputSender("Raw", 2.5, 10, appLog), "KEY_DELAY_MS")
 Rejects("InputSender without a logger", () => InputSender("Raw", 20, 10), "Logger")
 Rejects("MAX_CHARS 0", () => ClipboardTyper(sender, appLog, 0, 10, 300), "MAX_CHARS")
 Rejects("MAX_CHARS 1.5", () => ClipboardTyper(sender, appLog, 1.5, 10, 300), "MAX_CHARS")
@@ -50,9 +67,12 @@ for pair in [
 
 ; The tray menu as Windows sees it: AutoHotkey's own items are gone, the app's are grouped
 hTray := A_TrayMenu.Handle
+hSpeed := SubMenuHandle(hTray, TrayMenu.SPEED_PREFIX . startSpeed)
 hStep := SubMenuHandle(hTray, TrayMenu.STEP_OPTIONS_ITEM)
 hTrouble := SubMenuHandle(hTray, TrayMenu.TROUBLE_ITEM)
-Check("tray top level", MenuNames(hTray), "Type clipboard|Step mode (one line per press)|-|Step options|Troubleshooting|-|How to use|Exit")
+Check("tray top level", MenuNames(hTray), "Type clipboard|Step mode (one line per press)|-|Speed: " . startSpeed . "|Step options|Troubleshooting|-|How to use|Exit")
+Check("tray Speed", MenuNames(hSpeed), "Fast (10 ms)|Normal (20 ms)|Slow (40 ms)|Very slow (80 ms)|-|Custom...")
+Check("Speed starts on KEY_DELAY_MS/KEY_PRESS_MS", TickedItems(hSpeed), startItem)
 Check("tray Step options", MenuNames(hStep), "Show typed text|Select field text first (Ctrl+A)")
 Check("tray Troubleshooting", MenuNames(hTrouble), "Debug logging|-|Open log folder|Edit script settings|Reload script")
 Check("double-click runs Type clipboard", A_TrayMenu.Default, TrayMenu.TYPE_ITEM)
@@ -106,6 +126,46 @@ tray.OnDebugLogging()
 Check("tray turns debug logging off", appLog.IsDebugEnabled() ? "on" : "off", "off")
 Check("debug logging item unticked", MenuChecked(hTrouble, TrayMenu.DEBUG_ITEM), "unticked")
 try FileDelete(A_ScriptDir . "\debug.log")
+
+; Speed: SetDelays checks its range; each preset sets delay and press, ticks only itself and renames the Speed item
+for bad in [[-1, 10], [1001, 10], ["fast", 10], [20, -1], [2.5, 10]] {
+    Check("SetDelays rejects " . bad[1] . "/" . bad[2], sender.SetDelays(bad[1], bad[2]) ? "accepted" : "rejected", "rejected")
+}
+Check("SetDelays accepts 0 and numeric text", (sender.SetDelays(0, " 40 ") && sender.GetDelayMs() = 0 && sender.GetPressMs() = 40) ? "yes" : "no", "yes")
+for preset in TrayMenu.SPEED_PRESETS {
+    item := preset.name . " (" . preset.delay . " ms)"
+    tray.OnSpeedPreset(item)
+    Check("preset " . preset.name . " sets delay/press", sender.GetDelayMs() . "/" . sender.GetPressMs(), preset.delay . "/" . preset.press)
+    Check("preset " . preset.name . " is the only ticked item", TickedItems(hSpeed), item)
+    Check("Speed item shows " . preset.name, InStr(MenuNames(hTray), "|Speed: " . preset.name . "|") ? "yes" : "no: " . MenuNames(hTray), "yes")
+}
+Check("tray tip names a non-default speed", InStr(A_IconTip, "very slow") ? "yes" : "no: " . A_IconTip, "yes")
+Check("debug start line shows the speed in use", InStr(DebugStartFields(), " delay=80 press=30 ") ? "yes" : "no: " . DebugStartFields(), "yes")
+tray.OnSpeedPreset("Normal (20 ms)")
+Check("tray tip leaves Normal out", A_IconTip, "Clipboard Typer " . VERSION . " (" . DescribeHotkey(HOTKEY_TYPE_CLIPBOARD) . ")")
+
+; Custom speed: whole ms from 0 to 1000; a preset's delay applies that whole preset
+Check("custom 25 applied", tray._ApplyCustomDelay("25") ? "yes" : "no", "yes")
+Check("custom 25 keeps the press time", sender.GetDelayMs() . "/" . sender.GetPressMs(), "25/10")
+Check("custom 25 ticks Custom", TickedItems(hSpeed), "Custom...")
+Check("custom 25 label", InStr(MenuNames(hTray), "|Speed: Custom (25 ms)|") ? "yes" : "no: " . MenuNames(hTray), "yes")
+for bad in ["abc", "2.5", "", 1001, -1] {
+    Check("custom '" . bad . "' refused and changes nothing", (tray._ApplyCustomDelay(bad) ? "applied" : "refused") . " " . sender.GetDelayMs(), "refused 25")
+}
+Check("custom 1000 applied", (tray._ApplyCustomDelay(1000) && sender.GetDelayMs() = 1000) ? "yes" : "no", "yes")
+Check("custom 700 applied", (tray._ApplyCustomDelay(700) && sender.GetDelayMs() = 700) ? "yes" : "no", "yes")
+tray.OnSpeedPreset("Very slow (80 ms)")
+tray._ApplyCustomDelay(20)
+Check("custom 20 after Very slow is Normal, press too", sender.GetDelayMs() . "/" . sender.GetPressMs() . " " . TickedItems(hSpeed), "20/10 Normal (20 ms)")
+sender.SetDelays(40, 30)
+tray.Refresh()
+Check("Slow's delay with another press time is Custom", TickedItems(hSpeed) . " / " . (InStr(MenuNames(hTray), "|Speed: Custom (40 ms)|") ? "labelled" : "not labelled"), "Custom... / labelled")
+sender.SetDelays(KEY_DELAY_MS, KEY_PRESS_MS)  ; NOTE: back to the starting speed
+tray.Refresh()
+
+; Run stats in the done message
+Check("done message with time and rate", typer._DoneMessage(42, 1400), "Typed 42 chars in 1.4s (30/s)")
+Check("done message for a run too short to time", typer._DoneMessage(1, 0), "Typed 1 chars")
 
 ; Step mode messages for the paths that type nothing, with _Notify swapped for a spy
 lastNotice := ""
@@ -217,6 +277,7 @@ GrabHelp() {
     Check("help explains step mode", InStr(text, "Step mode") ? "yes" : "no", "yes")
     Check("help mentions Show typed text", InStr(text, "Step options > Show typed text") ? "yes" : "no", "yes")
     Check("help says how to apply edited settings", InStr(text, "Reload script") ? "yes" : "no", "yes")
+    Check("help points dropped characters to Speed", (InStr(text, "Speed > Slow") && !InStr(text, "Raise KEY_DELAY_MS")) ? "yes" : "no", "yes")
 }
 
 ; --- Menu inspection (Win32), so the checks see the menu the user sees ---
@@ -250,6 +311,17 @@ MenuPos(hMenu, itemName) {
 
 SubMenuHandle(hMenu, itemName) {
     return DllCall("GetSubMenu", "Ptr", hMenu, "Int", MenuPos(hMenu, itemName), "Ptr")
+}
+
+; Names of the ticked items, joined with |.
+TickedItems(hMenu) {
+    ticked := ""
+    for name in StrSplit(MenuNames(hMenu), "|") {
+        if name != "-" && MenuChecked(hMenu, name) = "ticked" {
+            ticked .= (ticked = "" ? "" : "|") . name
+        }
+    }
+    return ticked
 }
 
 MenuChecked(hMenu, itemName) {

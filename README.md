@@ -36,6 +36,7 @@ Right-click the tray icon for everything else:
 Type clipboard                     (same as double-clicking the icon)
 Step mode (one line per press)
 ──────────────
+Speed: Normal                   ▸  Fast · Normal · Slow · Very slow · Custom...
 Step options                    ▸  Show typed text · Select field text first (Ctrl+A)
 Troubleshooting                 ▸  Debug logging · Open log folder · Edit script settings · Reload script
 ──────────────
@@ -43,7 +44,11 @@ How to use
 Exit
 ```
 
-Hover over the icon to see the hotkey and any setting that's switched on, such as step mode or debug logging.
+Hover over the icon to see the hotkey and any setting that's switched on, such as step mode, debug logging or a speed other than Normal.
+
+### Speed
+
+If characters go missing in a slow or laggy session, choose tray icon > **Speed** > **Slow** or **Very slow**. **Fast** suits a local window or a quick connection. Each speed is labelled by the pause after each key (Normal is 20 ms); **Custom...** sets any pause from 0 to 1000 ms. A change applies from the next run. Opening the tray menu while it types takes focus from the window, which stops the run. When a run finishes, the notice shows the real speed, like `Typed 42 chars in 1.4s (30/s)`.
 
 ## Step mode: one line per press
 
@@ -63,7 +68,7 @@ While step mode is on, the tray menu's **Type clipboard** and double-clicking th
 ## Good to know
 
 - **Line breaks press Enter and tabs press Tab.** In a terminal, every line runs as a command and a tab triggers auto-complete. A single trailing line break, like the one Excel adds to a copied cell, is dropped so one value doesn't press Enter.
-- **It types about 30 characters a second**, slow enough for laggy remote sessions. The limit is 2,000 characters per run.
+- **At Speed: Normal it types about 30 characters a second**, slow enough for most remote sessions; change it from tray icon > **Speed**. The limit is 2,000 characters per run.
 - **Your keyboard layout must match the remote machine's** (for example, both US English). If symbols like `@` and `"` come out swapped, the layouts differ. See `SEND_MODE` below.
 
 ## Settings
@@ -74,8 +79,8 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Open it with tr
 |---|---|---|
 | `HOTKEY_TYPE_CLIPBOARD` | `"^+!v"` | The hotkey (Ctrl+Shift+Alt+V). `^` is Ctrl, `+` is Shift, `!` is Alt, `#` is Win |
 | `SEND_MODE` | `"Raw"` | `"Raw"` sends real key presses and works in most remote consoles. `"Text"` sends Unicode characters and ignores keyboard layout, but many remote consoles ignore it |
-| `KEY_DELAY_MS` | `20` | Pause after each keystroke. Raise it to 40–50 if characters go missing |
-| `KEY_PRESS_MS` | `10` | How long each key is held down |
+| `KEY_DELAY_MS` | `20` | Starting speed: the pause after each keystroke, 0 to 1000 ms. Change it any time from tray icon > **Speed** |
+| `KEY_PRESS_MS` | `10` | Starting speed: how long each key is held down, 0 to 1000 ms. The **Speed** presets set this too |
 | `MAX_CHARS` | `2000` | Longer clipboards are refused. In step mode, longer lines are skipped |
 | `CLICK_TIMEOUT_SEC` | `10` | How long it waits for your click |
 | `FOCUS_SETTLE_MS` | `300` | Pause between your click and the first keystroke, so the field can take focus |
@@ -88,11 +93,11 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Open it with tr
 
 ## Troubleshooting
 
-- **Characters are missing:** raise `KEY_DELAY_MS` to 40–50.
+- **Characters are missing:** tray icon > **Speed** > **Slow**, or **Very slow** for a very laggy session.
 - **Symbols are wrong:** your keyboard layout and the remote machine's differ. Match them, or try `SEND_MODE := "Text"`.
 - **The hotkey does nothing inside a remote session:** the session is capturing your keys. Press the hotkey while your own desktop has focus, then click into the session. The tray menu works too.
 - **Nothing types into a window that's running as administrator:** Windows blocks input from normal programs into admin windows. Run the script as administrator.
-- **Something else went wrong:** check `error.log` next to the script (tray icon > **Troubleshooting** > **Open log folder**). For more detail, tick **Troubleshooting** > **Debug logging**, repeat what went wrong, and look at `debug.log`. A run that starts typing writes a line like `typed 12/80 stop=esc`; the reason is `done`, `esc`, `click`, `focus` (another window took focus) or `sendfail`. A run cancelled before you click writes `wait result=esc` or `wait result=timeout`, and each step-mode press writes a `step line=2/5 ... result=...` line instead. An `esc` line shows that Esc reached the script.
+- **Something else went wrong:** check `error.log` next to the script (tray icon > **Troubleshooting** > **Open log folder**). For more detail, tick **Troubleshooting** > **Debug logging**, repeat what went wrong, and look at `debug.log`. A run that starts typing writes a line like `typed 12/80 ms=410 cps=29.3 stop=esc`; the reason is `done`, `esc`, `click`, `focus` (another window took focus) or `sendfail`. A run cancelled before you click writes `wait result=esc` or `wait result=timeout`, and each step-mode press writes a `step line=2/5 ... result=...` line instead. An `esc` line shows that Esc reached the script.
 
 ## Privacy and security
 
@@ -109,7 +114,7 @@ Settings are the constants near the top of `ClipboardTyper.ahk`. Open it with tr
 
 ## Running the tests
 
-Double-click `tests/RunTests.ahk`. It runs unit checks, then drives your mouse and keyboard for about 4 minutes against two test windows, in both send modes and in step mode. Don't touch them until the results appear. Results go to `tests/results.txt`. Close any running Clipboard Typer first; the runner checks for this.
+Double-click `tests/RunTests.ahk`. It runs unit checks, then drives your mouse and keyboard for about 4 minutes against two test windows, in both send modes (each at every Speed preset) and in step mode. Don't touch them until the results appear. Results go to `tests/results.txt`. Close any running Clipboard Typer first; the runner checks for this.
 
 ## License
 

@@ -33,6 +33,10 @@ try {
             RunSuite()
         case "Step":
             RunStepSuite()
+        case "Enter":
+            RunEnterSuite()
+        case "StepEnter":
+            RunStepEnterSuite()
         default:
             Check("known pass name", false, "no suite for pass '" . label . "'")
     }
@@ -230,6 +234,28 @@ RunStepSuite() {
     got := StepPress()
     Check("S8 empty clipboard types nothing", got == "", "got=" . Show(got))
 
+    ; S10 a focus change stops a step line; the list stays on it and the next press retypes it whole
+    longLine := Repeat("abcdefghij", 8)
+    Clear()
+    mark := LogMark()
+    StartStepLine(longLine . "`r`nnext")
+    WinActivate("CT_Other")
+    got := WaitIdle("CT_Target")
+    other := ControlGetText("Edit1", "CT_Other")
+    Check("S10 focus change stops a step line", IsPartial(got, longLine) && other == "" && LogHas("DEBUG step line=1/2 len=80 result=stopped stop=focus", mark), StrLen(got) . "/80 chars, other=" . Show(other) . "; " . LogTail(mark))
+    got := StepPress()
+    Check("S10 the next press retypes the stopped line whole", got == longLine, StrLen(got) . "/80 chars")
+    got := StepPress()
+    Check("S10 then the list moves on", got == "next", "got=" . Show(got))
+
+    ; S10b Esc stops a step line (and is swallowed, so it can't reach the app)
+    Clear()
+    mark := LogMark()
+    StartStepLine(longLine . "`r`nnext again")
+    Send("{Esc}")
+    got := WaitIdle("CT_Target")
+    Check("S10b Esc stops a step line", IsPartial(got, longLine) && LogHas("DEBUG step line=1/2 len=80 result=stopped stop=esc", mark), StrLen(got) . "/80 chars; " . LogTail(mark))
+
     ; S12 a step press is logged as a result, and the line itself never reaches the logs
     Clear()
     mark := LogMark()
@@ -239,6 +265,73 @@ RunStepSuite() {
     Check("S12 step line typed and logged, text never in debug.log or error.log"
         , got == "zqSECRET7731" && !leaked && LogHas("DEBUG step line=1/1 len=12 result=typed", mark)
         , "got=" . Show(got) . (leaked ? ", LEAKED into a log" : "") . "; " . LogTail(mark))
+}
+
+; The "Enter" pass runs the typer with AFTER_TYPING := "Enter".
+RunEnterSuite() {
+    longText := Repeat("abcdefghij", 8)
+
+    ; T9 Enter follows a run that typed everything (the test Edit is multi-line, so Enter adds `r`n)
+    Clear()
+    mark := LogMark()
+    Trigger("abc")
+    ClickIn("CT_Target")
+    got := WaitIdle("CT_Target")
+    Check("T9 Enter follows a completed run", got == "abc`r`n" && LogHas("DEBUG after key=Enter result=sent", mark), "got=" . Show(got) . "; " . LogTail(mark))
+
+    ; T10 no Enter after a run stopped with Esc
+    Clear()
+    mark := LogMark()
+    Trigger(longText)
+    ClickIn("CT_Target")
+    Sleep(1200)
+    Send("{Esc}")
+    got := WaitIdle("CT_Target")
+    Check("T10 a run stopped with Esc gets no Enter", IsPartial(got, longText) && LogHas("DEBUG typed \d+/80 .*stop=esc", mark)
+        && LogHas("DEBUG after key=Enter result=skipped-stopped", mark) && !LogHas("result=sent", mark), StrLen(got) . "/80 chars; " . LogTail(mark))
+}
+
+; The "StepEnter" pass runs the typer with STEP_MODE := true and AFTER_TYPING := "Enter".
+RunStepEnterSuite() {
+    longLine := Repeat("abcdefghij", 8)
+
+    ; S9 each press types its line, then Enter; the next press replaces both
+    Clear()
+    SetClip("alpha`r`nbeta+1")
+    got1 := StepPress()
+    got2 := StepPress()
+    Check("S9 each step press types its line then Enter", got1 == "alpha`r`n" && got2 == "beta+1`r`n", Show(got1) . " / " . Show(got2))
+
+    ; S11 a stopped step line gets no Enter, and neither does its retyped version
+    Clear()
+    mark := LogMark()
+    StartStepLine(longLine . "`r`nnext")
+    WinActivate("CT_Other")
+    got := WaitIdle("CT_Target")
+    other := ControlGetText("Edit1", "CT_Other")
+    Check("S11 a stopped step line gets no Enter", IsPartial(got, longLine) && other == "" && LogHas("DEBUG after key=Enter result=skipped-stopped", mark), StrLen(got) . "/80 chars, other=" . Show(other) . "; " . LogTail(mark))
+    got := StepPress()
+    Check("S11 the retyped line gets no Enter either", got == longLine && LogHas("DEBUG after key=Enter result=skipped-retry", mark), "got " . StrLen(got) . " chars" . (InStr(got, "`n") ? " with a line break" : "") . "; " . LogTail(mark))
+}
+
+; Copies the list, presses the hotkey in the target field, and returns once the first line has started typing.
+StartStepLine(listText) {
+    SetClip(listText)
+    Sleep(300)  ; NOTE: extra time for the clipboard change to register before the press
+    WinActivate("CT_Target")
+    WinWaitActive("CT_Target", , 2)
+    ControlFocus("Edit1", "CT_Target")
+    Send("^+!v")
+    WaitForTyping("CT_Target")
+}
+
+; Waits (up to 5s) until the field has some text, so a stop lands mid-line however late the hotkey fires.
+WaitForTyping(winTitle) {
+    start := A_TickCount
+    while ControlGetText("Edit1", winTitle) == "" && A_TickCount - start < 5000 {
+        Sleep(50)
+    }
+    Sleep(300)
 }
 
 ; Focuses the target field, presses the hotkey once, and returns the field's text when typing has settled.

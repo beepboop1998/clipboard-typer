@@ -30,8 +30,10 @@ for preset in TrayMenu.SPEED_PRESETS {
         startItem := preset.name . " (" . preset.delay . " ms)"
     }
 }
+startAfterKey := typer.GetAfterTyping()  ; NOTE: AFTER_TYPING picks the starting After typing key
+startAfterShown := startAfterKey = "" ? "nothing" : startAfterKey
 tipStates := ""
-for state in [DEBUG_LOG ? "debug logging" : "", startSpeed != "Normal" ? StrLower(startSpeed) : ""] {
+for state in [startAfterKey != "" ? "then " . startAfterKey : "", DEBUG_LOG ? "debug logging" : "", startSpeed != "Normal" ? StrLower(startSpeed) : ""] {
     if state != "" {
         tipStates .= (tipStates = "" ? " - " : ", ") . state
     }
@@ -52,6 +54,7 @@ Rejects("CLICK_TIMEOUT_SEC 0", () => ClipboardTyper(sender, appLog, 2000, 0, 300
 Rejects("FOCUS_SETTLE_MS -1", () => ClipboardTyper(sender, appLog, 2000, 10, -1), "FOCUS_SETTLE_MS")
 Rejects("STEP_STATUS_MS 0", () => ClipboardTyper(sender, appLog, 2000, 10, 300, false, true, 0), "STEP_STATUS_MS")
 Rejects("ClipboardTyper without a logger", () => ClipboardTyper(sender, "", 2000, 10, 300), "Logger")
+Rejects("AFTER_TYPING 'Space'", () => ClipboardTyper(sender, appLog, 2000, 10, 300, false, true, 1500, false, "Space"), "AFTER_TYPING")
 
 ; Step mode line splitting (lines joined with | for comparison)
 for pair in [
@@ -68,9 +71,10 @@ for pair in [
 ; The tray menu as Windows sees it: AutoHotkey's own items are gone, the app's are grouped
 hTray := A_TrayMenu.Handle
 hSpeed := SubMenuHandle(hTray, TrayMenu.SPEED_PREFIX . startSpeed)
+hAfter := SubMenuHandle(hTray, TrayMenu.AFTER_PREFIX . startAfterShown)
 hStep := SubMenuHandle(hTray, TrayMenu.STEP_OPTIONS_ITEM)
 hTrouble := SubMenuHandle(hTray, TrayMenu.TROUBLE_ITEM)
-Check("tray top level", MenuNames(hTray), "Type clipboard|Step mode (one line per press)|-|Speed: " . startSpeed . "|Step options|Troubleshooting|-|How to use|Exit")
+Check("tray top level", MenuNames(hTray), "Type clipboard|Step mode (one line per press)|-|Speed: " . startSpeed . "|After typing: " . startAfterShown . "|Step options|Troubleshooting|-|How to use|Exit")
 Check("tray Speed", MenuNames(hSpeed), "Fast (10 ms)|Normal (20 ms)|Slow (40 ms)|Very slow (80 ms)|-|Custom...")
 Check("Speed starts on KEY_DELAY_MS/KEY_PRESS_MS", TickedItems(hSpeed), startItem)
 Check("tray Step options", MenuNames(hStep), "Show typed text|Select field text first (Ctrl+A)")
@@ -166,6 +170,79 @@ tray.Refresh()
 ; Run stats in the done message
 Check("done message with time and rate", typer._DoneMessage(42, 1400), "Typed 42 chars in 1.4s (30/s)")
 Check("done message for a run too short to time", typer._DoneMessage(1, 0), "Typed 1 chars")
+Check("done message with the after-typing key", typer._DoneMessage(42, 1400, "Enter"), "Typed 42 chars + Enter in 1.4s (30/s)")
+
+; After typing: "", Enter or Tab in any case; the tray ticks it, names it and shows it in the tooltip
+for pair in [["", ""], ["Enter", "Enter"], ["enter", "Enter"], ["TAB", "Tab"]] {
+    Check("SetAfterTyping '" . pair[1] . "'", (typer.SetAfterTyping(pair[1]) ? "accepted " : "rejected ") . typer.GetAfterTyping(), "accepted " . pair[2])
+}
+Check("SetAfterTyping 'Space' rejected, Tab kept", (typer.SetAfterTyping("Space") ? "accepted " : "rejected ") . typer.GetAfterTyping(), "rejected Tab")
+typer.SetAfterTyping("")
+tray.Refresh()
+Check("tray After typing", MenuNames(hAfter), "Nothing|Press Enter|Press Tab")
+Check("After typing starts on Nothing", TickedItems(hAfter), "Nothing")
+tray.OnAfterTyping("Press Enter")
+Check("tray sets After typing to Enter", typer.GetAfterTyping(), "Enter")
+Check("Press Enter ticked", TickedItems(hAfter), "Press Enter")
+Check("After typing item shows Enter", InStr(MenuNames(hTray), "|After typing: Enter|") ? "yes" : "no: " . MenuNames(hTray), "yes")
+Check("tray tip says then Enter", InStr(A_IconTip, "then Enter") ? "yes" : "no: " . A_IconTip, "yes")
+tray.OnAfterTyping("Nothing")
+Check("tray sets After typing back to nothing", typer.GetAfterTyping() . "|" . TickedItems(hAfter), "|Nothing")
+typer.SetAfterTyping(startAfterKey)  ; NOTE: back to the starting key
+tray.Refresh()
+
+; The click prompt counts every Enter, and the after-typing key
+for c in [["abc", "", "Click the field to type 3 chars into"],
+    ["a`nb`nc", "", "Click the field to type 5 chars into (presses Enter 2x)"],
+    ["abc", "Enter", "Click the field to type 3 chars into (then presses Enter)"],
+    ["a`nb`nc", "Enter", "Click the field to type 5 chars into (presses Enter 3x, the last one after the text)"],
+    ["abc", "Tab", "Click the field to type 3 chars into (then presses Tab)"],
+    ["a`nb", "Tab", "Click the field to type 3 chars into (presses Enter 1x, then presses Tab)"]] {
+    Check("click prompt: " . StrReplace(c[1], "`n", "\n") . " + '" . c[2] . "'", typer._ClickPrompt(c[1], c[2]), c[3])
+}
+
+; Unsafe targets: desktop, taskbar, Start/Search and non-text controls; never a title in the notice
+for c in [["Progman", "explorer.exe", true], ["WorkerW", "explorer.exe", true], ["Shell_TrayWnd", "explorer.exe", true],
+    ["Shell_SecondaryTrayWnd", "explorer.exe", true], ["Notepad", "notepad.exe", false],
+    ["Windows.UI.Core.CoreWindow", "SearchHost.exe", true], ["Windows.UI.Core.CoreWindow", "StartMenuExperienceHost.exe", true],
+    ["Windows.UI.Core.CoreWindow", "other.exe", false], ["", "", false]] {
+    Check("blocked class " . c[1] . " / " . c[2], typer._IsBlockedClass(c[1], c[2]) ? "blocked" : "allowed", c[3] ? "blocked" : "allowed")
+}
+blockedNotice := typer._RefusalNotice("Progman", "explorer.exe", false)
+Check("refusal notice names class and program", (InStr(blockedNotice, "class Progman, explorer.exe") && InStr(blockedNotice, "BLOCKED_TARGET_CLASSES")) ? "yes" : "no: " . blockedNotice, "yes")
+Check("refusal notice for own windows", typer._RefusalNotice("AutoHotkeyGUI", "AutoHotkey64.exe", true), "That's a Clipboard Typer window; nothing typed. Click the field to type into.")
+for c in [[1, 1, 0, 0, true], [1, 2, 0, 0, false], [1, 2, 5, 5, true], [1, 2, 5, 6, false], [0, 1, 0, 0, false], [1, 0, 0, 0, false], [1, 2, 0, 0, false]] {
+    Check("same target " . c[1] . "/" . c[2] . " owners " . c[3] . "/" . c[4], typer._SameTarget(c[1], c[2], c[3], c[4]) ? "yes" : "no", c[5] ? "yes" : "no")
+}
+for c in [["Button", true], ["ComboBox", true], ["SysListView32", true], ["Edit", false], ["RichEdit20W", false], ["Chrome_RenderWidgetHostHWND", false], ["", false]] {
+    Check("non-text control " . c[1], typer._IsNonTextControlClass(c[1]) ? "refused" : "typed into", c[2] ? "refused" : "typed into")
+}
+
+; Step statuses after a press
+Check("step status + Enter", typer._StepStatus(2, 5, "x", "Enter"), "2/5 typed + Enter")
+Check("step status, key skipped", typer._StepKeyMissedStatus(2, 5, "Enter", "skipped-focus"), "2/5 typed; Enter skipped (window lost focus): press again to retype it without Enter")
+Check("step status, stopped", typer._StepStoppedStatus(2, 5, "Enter"), "Stopped on line 2/5; press again to retype it (no Enter)")
+Check("step status, send failed", typer._StepStoppedStatus(2, 5, "", "sendfail"), "Send failed on line 2/5" . typer._ErrorHint() . "; press again to retype it")
+Check("step status, retyped", typer._StepRetypedStatus(2, 5, "Tab"), "2/5 retyped without Tab: check the field, then press Tab yourself")
+typer.ToggleSelectAllFirst()
+Check("step status, stopped without select-all", typer._StepStoppedStatus(2, 5, ""), "Stopped on line 2/5; part of it is in the field: clear it, then press again")
+typer.ToggleSelectAllFirst()
+
+; The key guard stops a run on a key pressed at a real-input level, and ignores this script's own keys
+typer._cancelled := false
+typer._stopReason := ""
+keyGuard := typer._StartKeyGuard()
+SendEvent("{F24}")  ; NOTE: SendLevel 0, like the script's own typing
+Sleep(100)
+Check("key guard ignores the script's own keystrokes", typer._cancelled ? "stopped" : "running", "running")
+SendLevel(2)
+SendEvent("{F24}")
+SendLevel(0)
+Sleep(100)
+Check("key guard stops on a key at a real-input level", (typer._cancelled ? "stopped " : "running ") . typer._stopReason, "stopped key")
+typer._StopKeyGuard(keyGuard)
+typer._cancelled := false
+typer._stopReason := ""
 
 ; Step mode messages for the paths that type nothing, with _Notify swapped for a spy
 lastNotice := ""
@@ -183,6 +260,23 @@ typer._index := 2
 Check("step line over MAX_CHARS types nothing", typer.TypeNextLine("") ? "typed" : "nothing", "nothing")
 Check("step line over MAX_CHARS says skipped", InStr(lastNotice, "is " . (MAX_CHARS + 1) . " chars (max " . MAX_CHARS . "); skipped") ? "yes" : "no: " . lastNotice, "yes")
 Check("step line over MAX_CHARS moves to the next line", typer._index, 3)
+; A step press resets the stop flags first, so an Esc from an earlier tray run can't stop this line
+typer._lines := ["x"]
+typer._index := 1
+typer._cancelled := true
+typer._stopReason := "esc"
+seenCancelled := "spy not called"
+typer.DefineProp("_CheckStepTarget", {Call: (this, *) => 1})
+typer.DefineProp("_ReinstallHooks", {Call: (this, *) => false})
+typer.DefineProp("_TypeChars", {Call: SpyTypeChars})
+selectAllWas := typer.IsSelectingAllFirst()
+typer._stepSelectAllFirst := false
+typer.TypeNextLine("")
+Check("step press resets a stale Esc", seenCancelled, "not cancelled")
+typer._stepSelectAllFirst := selectAllWas
+for name in ["_CheckStepTarget", "_ReinstallHooks", "_TypeChars"] {
+    typer.DeleteProp(name)
+}
 typer.DeleteProp("_Notify")
 typer._needsReload := true
 
@@ -278,6 +372,7 @@ GrabHelp() {
     Check("help mentions Show typed text", InStr(text, "Step options > Show typed text") ? "yes" : "no", "yes")
     Check("help says how to apply edited settings", InStr(text, "Reload script") ? "yes" : "no", "yes")
     Check("help points dropped characters to Speed", (InStr(text, "Speed > Slow") && !InStr(text, "Raise KEY_DELAY_MS")) ? "yes" : "no", "yes")
+    Check("help explains After typing", InStr(text, "After typing") ? "yes" : "no", "yes")
 }
 
 ; --- Menu inspection (Win32), so the checks see the menu the user sees ---
@@ -338,6 +433,12 @@ Out(line) {
 
 Check(name, got, want) {
     Out((got == want ? "PASS " : "FAIL ") . name . (got == want ? "" : "  | got=" . got . "  want=" . want))
+}
+
+SpyTypeChars(this, text, targetId, showProgress, &typed) {
+    global seenCancelled := this._cancelled ? "cancelled" : "not cancelled"
+    typed := StrLen(text)
+    return "done"
 }
 
 SpyNotify(this, message, durationMs := 0) {

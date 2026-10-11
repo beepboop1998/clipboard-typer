@@ -1,13 +1,13 @@
 /*
     RunTests.ahk
-    Responsibility: Runs Unit.ahk, then E2E.ahk against copies of ClipboardTyper.ahk in Raw mode, Text mode
-                    and step mode, and writes everything to tests\results.txt.
+    Responsibility: Runs Unit.ahk, then E2E.ahk against copies of ClipboardTyper.ahk in Raw mode, Text mode,
+                    step mode and with After typing: Enter, and writes everything to tests\results.txt.
     Dependencies: Unit.ahk, E2E.ahk, TestTarget.ahk, LeakProbe.ahk (optional), ..\ClipboardTyper.ahk
     Author: reuben
     Usage: double-click. Arguments (optional, any order):
              leak        also run LeakProbe.ahk (adds about 2 minutes)
              unattended  skip the prompts; exit code = number of FAIL lines
-    NOTE: the end-to-end part drives the real mouse and keyboard for about 4 minutes. Don't touch them.
+    NOTE: the end-to-end part drives the real mouse and keyboard for about 5 minutes. Don't touch them.
 */
 #Requires AutoHotkey v2.0
 #SingleInstance Force
@@ -22,11 +22,13 @@ workDir := A_Temp . "\ClipboardTyperTests"
 
 ; One end-to-end pass per entry, in this order. Each pass runs a copy of the script with these settings
 ; (plus SHOW_STARTUP_TIP := false and DEBUG_LOG := true) and the E2E suite of the same name.
-PASS_ORDER := ["Raw", "Text", "Step"]
+PASS_ORDER := ["Raw", "Text", "Step", "Enter", "StepEnter"]
 PASS_SETTINGS := Map(
     "Raw",  Map("SEND_MODE", '"Raw"',  "STEP_MODE", "false"),
     "Text", Map("SEND_MODE", '"Text"', "STEP_MODE", "false"),
-    "Step", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "true"))
+    "Step", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "true"),
+    "Enter", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "false", "AFTER_TYPING", '"Enter"'),
+    "StepEnter", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "true", "AFTER_TYPING", '"Enter"'))
 
 ; Guard: a running ClipboardTyper would also answer the test hotkey
 DetectHiddenWindows(true)
@@ -39,7 +41,7 @@ DetectHiddenWindows(false)
 
 if !unattended {
     answer := MsgBox("The end-to-end tests drive your mouse and keyboard for about "
-        . (withLeak ? 6 : 4) . " minutes. Don't touch them until the results appear.`n`nStart?",
+        . (withLeak ? 7 : 5) . " minutes. Don't touch them until the results appear.`n`nStart?",
         "ClipboardTyper tests", "OKCancel Icon!")
     if answer != "OK" {
         ExitApp()

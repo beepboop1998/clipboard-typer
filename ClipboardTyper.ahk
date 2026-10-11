@@ -38,6 +38,12 @@ STEP_SHOW_TEXT := false          ; step mode: show the typed line in the status.
                                  ; (turn on any time: tray icon > Step options > Show typed text)
 DEBUG_LOG := false               ; start with debug logging on (tray: Troubleshooting > Debug logging): what each run did,
                                  ; in debug.log next to the script; never the text itself
+AFTER_TYPING := ""               ; "", "Enter" or "Tab": key pressed after a run that typed everything (tray icon > After typing)
+STOP_ON_KEYPRESS := true         ; a key you press while it types stops it, and the key is blocked so it can't mix into the text
+BLOCKED_TARGET_CLASSES := "Progman,WorkerW,Shell_TrayWnd,Shell_SecondaryTrayWnd,Windows.UI.Core.CoreWindow"
+                                 ; never type into these window classes: desktop, taskbars, Start/Search
+                                 ; (Windows.UI.Core.CoreWindow only when it belongs to Start or Search)
+REQUIRE_CLICKED_FOCUS := true    ; refuse when the window you clicked didn't take focus; set to false if a viewer is wrongly refused
 
 ; --- Wiring ---
 ; NOTE: instance names differ from class names; AHK v2 names are case-insensitive, so
@@ -46,7 +52,8 @@ DEBUG_LOG := false               ; start with debug logging on (tray: Troublesho
 appLog := Logger(A_ScriptDir, DEBUG_LOG)
 InstallKeybdHook()  ; NOTE: unconditional, so GetKeyState(key, "P") reads the physical state for the stuck-key release
 sender := InputSender(SEND_MODE, KEY_DELAY_MS, KEY_PRESS_MS, appLog)
-typer := ClipboardTyper(sender, appLog, MAX_CHARS, CLICK_TIMEOUT_SEC, FOCUS_SETTLE_MS, STEP_MODE, STEP_SELECT_ALL_FIRST, STEP_STATUS_MS, STEP_SHOW_TEXT)
+typer := ClipboardTyper(sender, appLog, MAX_CHARS, CLICK_TIMEOUT_SEC, FOCUS_SETTLE_MS, STEP_MODE, STEP_SELECT_ALL_FIRST, STEP_STATUS_MS, STEP_SHOW_TEXT,
+    AFTER_TYPING, BLOCKED_TARGET_CLASSES, STOP_ON_KEYPRESS, REQUIRE_CLICKED_FOCUS)
 
 hotkeyCallback := ObjBindMethod(typer, "OnHotkey")
 activeCallback := ObjBindMethod(typer, "IsActive")
@@ -72,6 +79,7 @@ OnError(OnUnhandledError)  ; NOTE: last, so an invalid setting above still shows
 if SHOW_STARTUP_TIP {
     TrayTip("Press " . hotkeyLabel . " or double-click the tray icon to type the clipboard.`nRight-click the tray icon for options and help.", "Clipboard Typer " . VERSION . " is running", "Iconi Mute")
 }
+ShowAfterTypingReminder()
 if !appLog.Debug("start", DebugStartFields()) {
     appLog.SetDebugEnabled(false)  ; NOTE: as in Troubleshooting > Debug logging: unwritable, so untick it (the Logger said why)
     tray.Refresh()
@@ -135,7 +143,21 @@ DebugStartFields() {
     try layout := DllCall("GetKeyboardLayoutNameW", "Ptr", klid, "Int") ? StrGet(klid, "UTF-16") : ""
     return "ver=" . VERSION . " ahk=" . A_AhkVersion . " os=" . A_OSVersion . " admin=" . (A_IsAdmin ? 1 : 0)
         . " mode=" . SEND_MODE . " delay=" . sender.GetDelayMs() . " press=" . sender.GetPressMs()
-        . " step=" . (typer.IsStepMode() ? 1 : 0) . " layout=" . layout
+        . " step=" . (typer.IsStepMode() ? 1 : 0) . " after=" . (typer.GetAfterTyping() = "" ? "nothing" : typer.GetAfterTyping())
+        . " layout=" . layout
+}
+
+; At startup: an After typing key that is switched on is announced even with SHOW_STARTUP_TIP off,
+; since a forgotten Enter can run a half-checked command. Shown as a notification and as a tooltip,
+; because Focus assist can hide notifications while a full-screen session has focus.
+ShowAfterTypingReminder() {
+    key := typer.GetAfterTyping()
+    if key = "" {
+        return  ; guard: nothing to remind about
+    }
+    message := "After typing is set to press " . key . ". Change it: tray icon > After typing."
+    try TrayTip(message, "Clipboard Typer " . VERSION, "Icon! Mute")
+    typer.ShowNotice(message, 5000)
 }
 
 ; Tray menu > How to use
@@ -144,13 +166,16 @@ ShowHelp(*) {
         "1. Copy the text you want typed.`n"
         . "2. Press " . hotkeyLabel . " or double-click the tray icon.`n"
         . "3. Within " . CLICK_TIMEOUT_SEC . "s, click the field to type into. Typing starts right after.`n`n"
-        . "Stop: press Esc or click anywhere. It also stops if another window takes focus.`n"
-        . "Line breaks press Enter and tabs press Tab. Limit: " . MAX_CHARS . " characters.`n`n"
+        . "Stop: press Esc" . (STOP_ON_KEYPRESS ? ", click anywhere, or press any key" : " or click anywhere") . ". It also stops if another window takes focus.`n"
+        . "Line breaks press Enter and tabs press Tab. Limit: " . MAX_CHARS . " characters. "
+        . "It won't type into the desktop, the taskbar or Start.`n"
+        . "Tray icon > After typing: press Enter or Tab once everything is typed (never after a stopped run).`n`n"
         . "Step mode (tray icon > Step mode): each press of " . hotkeyLabel . " types the next line into the field "
         . "that has focus, replacing its text. No click needed. Blank lines are skipped and only the first column "
         . "of a spreadsheet copy is typed. Copy again to restart at line 1. Tray icon > Type clipboard and double-clicking "
         . "the tray icon still type everything. The status shows only the line number; tick tray icon > Step options > Show typed text "
-        . "to see the line itself, and leave it off for passwords.`n`n"
+        . "to see the line itself, and leave it off for passwords. Esc" . (STOP_ON_KEYPRESS ? ", a click or a key press" : " or a click") . " stops a line; "
+        . "the next press types it again, without the After typing key.`n`n"
         . "Wrong symbols? The remote keyboard layout differs from yours; try SEND_MODE := `"Text`".`n"
         . "Characters dropped? Tray icon > Speed > Slow (or Very slow).`n"
         . "Settings are the constants near the top of the script: tray icon > Troubleshooting > Edit script settings, "
@@ -173,6 +198,11 @@ class TrayMenu {
         {name: "Normal", delay: 20, press: 10},
         {name: "Slow", delay: 40, press: 20},
         {name: "Very slow", delay: 80, press: 30}]
+    static AFTER_PREFIX := "After typing: "  ; the After typing item's label is this plus the current choice
+    static AFTER_CHOICES := [
+        {key: "", item: "Nothing", shown: "nothing"},
+        {key: "Enter", item: "Press Enter", shown: "Enter"},
+        {key: "Tab", item: "Press Tab", shown: "Tab"}]
     static STEP_OPTIONS_ITEM := "Step options"
     static SHOW_TEXT_ITEM := "Show typed text"
     static SELECT_ALL_ITEM := "Select field text first (Ctrl+A)"
@@ -197,6 +227,9 @@ class TrayMenu {
     _speedItemName := ""    ; the Speed item's current label
     _speedItemPos := ""     ; the Speed item's position ("4&"): Rename by position can't miss after a failed rename
     _menuWarned := false    ; the "couldn't update the menu" notice shows once
+    _afterMenu := ""
+    _afterItemName := ""    ; the After typing item's current label
+    _afterItemPos := ""     ; the After typing item's position ("5&")
     _stepMenu := ""
     _troubleMenu := ""
     _callbacks := ""        ; method name -> callback bound to this, bound once
@@ -220,11 +253,12 @@ class TrayMenu {
         this._version := version
         this._hotkeyLabel := hotkeyLabel
         this._speedMenu := Menu()
+        this._afterMenu := Menu()
         this._stepMenu := Menu()
         this._troubleMenu := Menu()
         this._callbacks := Map()
-        for name in ["OnTypeClipboard", "OnStepMode", "OnSpeedPreset", "OnCustomSpeed", "OnShowText", "OnSelectAll",
-            "OnDebugLogging", "OnOpenLogFolder", "OnEditSettings", "OnReload", "OnHelp", "OnExitItem"] {
+        for name in ["OnTypeClipboard", "OnStepMode", "OnSpeedPreset", "OnCustomSpeed", "OnAfterTyping", "OnShowText",
+            "OnSelectAll", "OnDebugLogging", "OnOpenLogFolder", "OnEditSettings", "OnReload", "OnHelp", "OnExitItem"] {
             callback := ObjBindMethod(this, name)
             if !callback {
                 throw Error("Failed to bind " . name, A_ThisFunc)
@@ -243,6 +277,10 @@ class TrayMenu {
         }
         this._speedMenu.Add()
         this._speedMenu.Add(TrayMenu.CUSTOM_SPEED_ITEM, cb["OnCustomSpeed"], "Radio")
+        this._afterMenu.Delete()
+        for choice in TrayMenu.AFTER_CHOICES {
+            this._afterMenu.Add(choice.item, cb["OnAfterTyping"], "Radio")
+        }
         this._stepMenu.Delete()
         this._stepMenu.Add(TrayMenu.SHOW_TEXT_ITEM, cb["OnShowText"])
         this._stepMenu.Add(TrayMenu.SELECT_ALL_ITEM, cb["OnSelectAll"])
@@ -260,6 +298,9 @@ class TrayMenu {
         this._speedItemName := this._SpeedLabel()
         m.Add(this._speedItemName, this._speedMenu)
         this._speedItemPos := "4&"  ; NOTE: after Type clipboard, Step mode and the separator
+        this._afterItemName := this._AfterLabel()
+        m.Add(this._afterItemName, this._afterMenu)
+        this._afterItemPos := "5&"  ; NOTE: right after Speed
         m.Add(TrayMenu.STEP_OPTIONS_ITEM, this._stepMenu)
         m.Add(TrayMenu.TROUBLE_ITEM, this._troubleMenu)
         m.Add()
@@ -280,6 +321,7 @@ class TrayMenu {
             this._LogError(A_ThisFunc, e.Message, e)
         }
         this._SyncSpeed()
+        this._SyncAfterTyping()
         A_IconTip := this._TipText()
     }
 
@@ -289,7 +331,23 @@ class TrayMenu {
     }
 
     OnStepMode(*) {
-        this._typer.ToggleStepMode()
+        if this._typer.ToggleStepMode() && this._typer.GetAfterTyping() != "" {
+            this._typer.ShowNotice("Step mode: each press types a line, then presses " . this._typer.GetAfterTyping() . ".", 4000)
+        }
+        this.Refresh()
+    }
+
+    ; Tray > After typing > Nothing / Press Enter / Press Tab. Applies from the next run.
+    OnAfterTyping(itemName, *) {
+        for choice in TrayMenu.AFTER_CHOICES {
+            if choice.item = itemName {
+                this._typer.SetAfterTyping(choice.key)
+                if choice.key != "" && this._typer.IsStepMode() {
+                    this._typer.ShowNotice("Step mode: each press types a line, then presses " . choice.key . ".", 4000)
+                }
+                break
+            }
+        }
         this.Refresh()
     }
 
@@ -417,6 +475,9 @@ class TrayMenu {
         if this._typer.IsShowingStepText() {
             states.Push("shows typed text")
         }
+        if this._typer.GetAfterTyping() != "" {
+            states.Push("then " . this._typer.GetAfterTyping())
+        }
         if this._logger.IsDebugEnabled() {
             states.Push("debug logging")
         }
@@ -500,6 +561,32 @@ class TrayMenu {
         }
         this._menuWarned := true
         this._Notice("Couldn't update the tray menu; the setting still applies" . this._ErrorHint() . ".")
+    }
+
+    _AfterLabel() {
+        for choice in TrayMenu.AFTER_CHOICES {
+            if choice.key = this._typer.GetAfterTyping() {
+                return TrayMenu.AFTER_PREFIX . choice.shown
+            }
+        }
+        return TrayMenu.AFTER_PREFIX . "nothing"
+    }
+
+    ; Ticks the current After typing choice and renames the After typing item to show it.
+    _SyncAfterTyping() {
+        try {
+            for choice in TrayMenu.AFTER_CHOICES {
+                this._SetCheck(this._afterMenu, choice.item, choice.key = this._typer.GetAfterTyping())
+            }
+            label := this._AfterLabel()
+            if this._afterItemPos != "" && label != this._afterItemName {
+                this._menu.Rename(this._afterItemPos, label)
+                this._afterItemName := label
+            }
+        } catch Error as e {
+            this._LogError(A_ThisFunc, e.Message, e)
+            this._WarnMenu()
+        }
     }
 
     _SetCheck(menuObj, itemName, isOn) {
@@ -808,30 +895,46 @@ class InputSender {
 
 
 class ClipboardTyper {
+    ; --- Labels ---
+    ; NOTE: every UWP/XAML app window has this class; it is refused only when it belongs to Start or Search
+    static CORE_WINDOW_CLASS := "Windows.UI.Core.CoreWindow"
+    static START_SEARCH_EXES := ["StartMenuExperienceHost.exe", "ShellExperienceHost.exe", "SearchHost.exe", "SearchApp.exe", "SearchUI.exe"]
+    ; Focused controls step mode won't type into (ClassNN without its number): typing a line there would
+    ; press a button, toggle a checkbox or pick a list entry
+    static NON_TEXT_CONTROLS := "^(Button|ComboBox|ListBox|SysListView32|SysTreeView32|SysTabControl32|msctls_trackbar32)$"
+
     ; --- Properties ---
     _inputSender := ""
     _logger := ""
     _maxChars := 0
     _clickTimeoutSec := 0
     _focusSettleMs := 0
-    _phase := ""            ; "" idle, "waiting" for the target click, "typing", "stepping" (step mode)
+    _phase := ""            ; "" idle, "waiting" for the target click, "typing", "stepping" (step-mode checks), "steptyping"
     _clicked := false
+    _clickedRoot := 0       ; top-level window under the mouse at the target click
     _cancelled := false
-    _stopReason := ""       ; why the current run stopped early: "esc" or "click" (set by the hotkeys)
+    _stopReason := ""       ; why the current run stopped early: "esc", "click" or "key"
     _notifyMs := 2500
     _progressEvery := 25    ; chars between progress tooltip updates
     _clearTipCallback := ""
+    _realKeyCallback := ""  ; key guard: a key the user pressed while it types
     _stepMode := false
     _stepSelectAllFirst := true
     _stepStatusMs := 1500
     _lines := []            ; step mode: clipboard lines, rebuilt after each copy
     _index := 1             ; step mode: next line to type
     _needsReload := true    ; step mode: set on every clipboard change
+    _retryLine := false     ; step mode: the line at _index stopped or missed its after-typing key; retype it without the key
     _clipChangeCallback := ""
     _showStepText := false  ; step mode: show the typed line in the status (off so passwords stay off screen)
+    _afterTyping := ""      ; "", "Enter" or "Tab": key pressed after a run that typed everything
+    _blockedClasses := ""   ; Map of lowercase window class -> true
+    _stopOnKeypress := true
+    _requireClickedFocus := true
 
     ; --- Constructor ---
-    __New(sender, logWriter, maxChars, clickTimeoutSec, focusSettleMs, stepMode := false, stepSelectAllFirst := true, stepStatusMs := 1500, showStepText := false) {
+    __New(sender, logWriter, maxChars, clickTimeoutSec, focusSettleMs, stepMode := false, stepSelectAllFirst := true, stepStatusMs := 1500, showStepText := false,
+        afterTyping := "", blockedClasses := "", stopOnKeypress := true, requireClickedFocus := true) {
         if !IsObject(sender) {
             throw Error("InputSender is required", A_ThisFunc)
         }
@@ -850,6 +953,9 @@ class ClipboardTyper {
         if !IsNumber(stepStatusMs) || stepStatusMs <= 0 {
             throw Error("STEP_STATUS_MS must be a number above 0", A_ThisFunc)
         }
+        if !this._CanonicalAfterKey(afterTyping, &afterKey) {
+            throw Error('AFTER_TYPING must be "", "Enter" or "Tab", not "' . afterTyping . '"', A_ThisFunc)
+        }
         this._inputSender := sender
         this._logger := logWriter
         this._maxChars := maxChars
@@ -859,10 +965,20 @@ class ClipboardTyper {
         this._stepSelectAllFirst := !!stepSelectAllFirst
         this._stepStatusMs := stepStatusMs
         this._showStepText := !!showStepText
+        this._afterTyping := afterKey
+        this._blockedClasses := Map()
+        for name in StrSplit(blockedClasses, ",", " `t") {
+            if name != "" {
+                this._blockedClasses[StrLower(name)] := true
+            }
+        }
+        this._stopOnKeypress := !!stopOnKeypress
+        this._requireClickedFocus := !!requireClickedFocus
         this._clearTipCallback := ObjBindMethod(this, "_ClearTip")
+        this._realKeyCallback := ObjBindMethod(this, "_OnRealKey")
         this._clipChangeCallback := ObjBindMethod(this, "_OnClipboardChange")
-        if !this._clipChangeCallback {
-            throw Error("Failed to bind _OnClipboardChange", A_ThisFunc)
+        if !this._clearTipCallback || !this._realKeyCallback || !this._clipChangeCallback {
+            throw Error("Failed to bind ClipboardTyper callbacks", A_ThisFunc)
         }
         OnClipboardChange(this._clipChangeCallback)
     }
@@ -875,8 +991,11 @@ class ClipboardTyper {
         }
         this._phase := "waiting"
         this._clicked := false
+        this._clickedRoot := 0
         this._cancelled := false
         this._stopReason := ""
+        afterKey := this._afterTyping  ; NOTE: a change made mid-run applies from the next run, so this run does what its prompt said
+        guard := ""
         try {
             text := this._ReadClipboard()
             if text = "" {
@@ -890,44 +1009,48 @@ class ClipboardTyper {
                 return false
             }
             StrReplace(text, "`n", "`n", , &enterCount)
-            this._Debug("run", "mode=full len=" . StrLen(text) . " enters=" . enterCount)
-            targetId := this._WaitForTargetClick(text)
+            this._Debug("run", "mode=full len=" . StrLen(text) . " enters=" . enterCount . " after=" . this._AfterName(afterKey))
+            targetId := this._WaitForTargetClick(text, afterKey)
             if !targetId {
                 return false  ; _WaitForTargetClick already told the user why
             }
-            this._LogTarget(targetId)
             this._ReinstallHooks()
             this._phase := "typing"
-            return this._TypeInto(targetId, text)
+            guard := this._StartKeyGuard()  ; NOTE: after the reinstall, so its hook sees keys before a viewer's hook
+            return this._TypeInto(targetId, text, afterKey)
         } catch Error as e {
             this._LogError(A_ThisFunc, e.Message, e)
             this._Notify("Error" . this._ErrorHint())
             return false
         } finally {
+            this._StopKeyGuard(guard)
             this._inputSender.ReleaseStuckModifiers()
             this._phase := ""
         }
     }
 
-    ; Hotkey condition: the click and Esc hotkeys only fire while a run is in progress.
-    ; NOTE: not while stepping, so Esc and clicks still reach the app during a step-mode press
+    ; Hotkey condition: the click and Esc hotkeys only fire while a run waits or types.
+    ; NOTE: not during step mode's checks (stepping), so Esc and clicks still reach the app until a line starts
     IsActive(*) {
         return this._phase != "" && this._phase != "stepping"
     }
 
-    ; Click hotkey: while waiting it picks the target, while typing it stops.
+    ; Click hotkey: while waiting it picks the target, while typing (or typing a step line) it stops.
     OnClick(*) {
-        if this._phase = "typing" {
+        if this._phase = "typing" || this._phase = "steptyping" {
             if this._stopReason = "" {
                 this._stopReason := "click"
             }
             this._cancelled := true
             return
         }
+        hwnd := 0
+        try MouseGetPos(, , &hwnd)
+        this._clickedRoot := hwnd ? DllCall("GetAncestor", "Ptr", hwnd, "UInt", 2, "Ptr") : 0  ; GA_ROOT
         this._clicked := true
     }
 
-    ; Esc hotkey: cancels the wait or stops typing.
+    ; Esc hotkey: cancels the wait or stops typing. The Esc itself never reaches the window.
     Cancel(*) {
         if this._stopReason = "" {
             this._stopReason := "esc"
@@ -944,13 +1067,19 @@ class ClipboardTyper {
         return this.TypeClipboard()
     }
 
-    ; Step mode: types the next clipboard line into the focused field, replacing its text.
-    ; No click needed, and it never sends Enter, Tab, Delete or Backspace.
+    ; Step mode: types the next clipboard line into the focused field, replacing its text. No click needed.
+    ; It sends no Enter, Tab, Delete or Backspace of its own; After typing may add one Enter or Tab.
     TypeNextLine(thisHotkey := "") {
         if this._phase != "" {
             return false  ; guard: already running, ignore repeat triggers
         }
         this._phase := "stepping"
+        ; NOTE: reset per press, so an Esc that stopped a tray "Type clipboard" run can't stop this line
+        this._cancelled := false
+        this._clicked := false
+        this._stopReason := ""
+        afterKey := this._afterTyping
+        guard := ""
         try {
             if !this._WaitForKeysUp(thisHotkey) {
                 this._LogError(A_ThisFunc, "Hotkey keys still held after 2s; nothing typed")
@@ -968,6 +1097,7 @@ class ClipboardTyper {
                 this._lines := lines
                 this._index := 1
                 this._needsReload := false
+                this._retryLine := false
             }
             total := this._lines.Length
             if total = 0 {
@@ -980,32 +1110,70 @@ class ClipboardTyper {
                 this._Notify("End of list (" . total . "/" . total . "). Copy the list again to restart.")
                 return false
             }
-            item := this._lines[this._index]
-            ; NOTE: checked before Ctrl+A; stepping has no click/Esc stop, so a huge line must never start
+            index := this._index
+            item := this._lines[index]
+            lineInfo := "line=" . index . "/" . total . " len=" . StrLen(item)
+            ; NOTE: checked before Ctrl+A, so a huge line never starts
             if StrLen(item) > this._maxChars {
-                this._Debug("step", "line=" . this._index . "/" . total . " len=" . StrLen(item) . " result=toolong")
-                this._Notify("Line " . this._index . "/" . total . " is " . StrLen(item) . " chars (max " . this._maxChars . "); skipped")
-                if total > 1 {
-                    this._index += 1  ; NOTE: move past it so the rest of the list stays reachable
-                }
+                this._Debug("step", lineInfo . " result=toolong")
+                this._Notify("Line " . index . "/" . total . " is " . StrLen(item) . " chars (max " . this._maxChars . "); skipped")
+                this._Advance(total)  ; NOTE: move past it so the rest of the list stays reachable
+                this._retryLine := false
                 return false
             }
-            if (this._stepSelectAllFirst && !this._inputSender.Send("^a")) || !this._inputSender.TypeText(item) {
-                this._Debug("step", "line=" . this._index . "/" . total . " len=" . StrLen(item) . " result=fail")
+            targetId := this._CheckStepTarget(lineInfo)
+            if !targetId {
+                return false  ; _CheckStepTarget already told the user why
+            }
+            isRetry := this._retryLine
+            this._ReinstallHooks()  ; NOTE: after _WaitForKeysUp, so no key is held during the reinstall
+            this._phase := "steptyping"
+            guard := this._StartKeyGuard()
+            if this._stepSelectAllFirst && !this._inputSender.Send("^a") {
+                this._Debug("step", lineInfo . " result=fail")
                 this._Notify("Send failed" . this._ErrorHint())
                 return false  ; NOTE: _index doesn't advance, so the next press retries this line
             }
-            this._Debug("step", "line=" . this._index . "/" . total . " len=" . StrLen(item) . " result=typed")
-            this._Notify(this._StepStatus(this._index, total, item), this._stepStatusMs)
-            if total > 1 {
-                this._index += 1  ; NOTE: a single line retypes on every press, like the full typer
+            stop := this._TypeChars(item, targetId, false, &typed)
+            if stop != "done" {
+                this._retryLine := true  ; NOTE: the list stays on this line; the next press retypes it
+                this._Debug("step", lineInfo . " result=stopped stop=" . stop)
+                if afterKey != "" {
+                    this._Debug("after", "key=" . afterKey . " result=skipped-stopped")
+                }
+                this._Notify(this._StepStoppedStatus(index, total, afterKey, stop), this._stepStatusMs)
+                return false
             }
+            if isRetry {
+                ; NOTE: a retyped line never gets the after-typing key: in a console, Ctrl+A may not have
+                ;       replaced the partial line, so the user checks the field before anything runs
+                this._retryLine := false
+                this._Advance(total)
+                this._Debug("step", lineInfo . " result=retyped")
+                if afterKey != "" {
+                    this._Debug("after", "key=" . afterKey . " result=skipped-retry")
+                    this._Notify(this._StepRetypedStatus(index, total, afterKey), this._stepStatusMs)
+                } else {
+                    this._Notify(this._StepStatus(index, total, item), this._stepStatusMs)
+                }
+                return true
+            }
+            sent := this._SendAfterKey(afterKey, targetId)
+            this._Debug("step", lineInfo . " result=typed after=" . this._AfterName(afterKey))
+            if sent = "" || sent = "sent" {
+                this._Advance(total)
+                this._Notify(this._StepStatus(index, total, item, sent = "sent" ? afterKey : ""), this._stepStatusMs)
+                return true
+            }
+            this._retryLine := true  ; NOTE: the key didn't go out; the next press retypes the line without it
+            this._Notify(this._StepKeyMissedStatus(index, total, afterKey, sent), this._stepStatusMs)
             return true
         } catch Error as e {
             this._LogError(A_ThisFunc, e.Message, e)
             this._Notify("Error" . this._ErrorHint())
             return false
         } finally {
+            this._StopKeyGuard(guard)
             this._inputSender.ReleaseStuckModifiers()
             this._phase := ""
         }
@@ -1017,6 +1185,7 @@ class ClipboardTyper {
         if this._stepMode {
             this._needsReload := true
         }
+        this._retryLine := false
         return this._stepMode
     }
 
@@ -1044,6 +1213,25 @@ class ClipboardTyper {
         return this._stepSelectAllFirst
     }
 
+    ; Tray menu > After typing: "", "Enter" or "Tab" (any case). Applies from the next run. False if rejected.
+    SetAfterTyping(key) {
+        if !this._CanonicalAfterKey(key, &afterKey) {
+            return false
+        }
+        this._afterTyping := afterKey
+        this._Debug("setting", "after=" . this._AfterName(afterKey))
+        return true
+    }
+
+    GetAfterTyping() {
+        return this._afterTyping
+    }
+
+    ; A status tooltip from outside a run (startup reminder, tray notices).
+    ShowNotice(message, durationMs := 0) {
+        this._Notify(message, durationMs)
+    }
+
     ; --- Private Methods ---
     _ReadClipboard() {
         try {
@@ -1059,13 +1247,8 @@ class ClipboardTyper {
         return text
     }
 
-    _WaitForTargetClick(text) {
-        StrReplace(text, "`n", "`n", , &enterCount)
-        prompt := "Click the field to type " . StrLen(text) . " chars into"
-        if enterCount > 0 {
-            prompt .= " (presses Enter " . enterCount . "x)"  ; NOTE: warn before multi-line text runs commands
-        }
-        this._ShowTip(prompt . "`nEsc to cancel (" . this._clickTimeoutSec . "s)")
+    _WaitForTargetClick(text, afterKey) {
+        this._ShowTip(this._ClickPrompt(text, afterKey) . "`nEsc to cancel (" . this._clickTimeoutSec . "s)")
         ; NOTE: _clicked is set by the *~LButton hotkey (OnClick); a button already held when this starts doesn't count
         deadline := A_TickCount + this._clickTimeoutSec * 1000
         while !this._clicked {
@@ -1084,7 +1267,7 @@ class ClipboardTyper {
         try {
             KeyWait("LButton")  ; wait for release so the click reaches the session first
             Sleep(this._focusSettleMs)
-            return WinGetID("A")
+            return this._CheckClickTarget()
         } catch Error as e {
             this._LogError(A_ThisFunc, e.Message, e)
             this._Notify("Couldn't find the clicked window" . this._ErrorHint())
@@ -1092,61 +1275,318 @@ class ClipboardTyper {
         }
     }
 
-    _TypeInto(targetId, text) {
-        total := StrLen(text)
-        typed := 0
-        stop := "done"
-        startTick := A_TickCount
-        Loop Parse text {
-            ; NOTE: checked per character so a click, Esc, or focus change stops it mid-text
-            if this._cancelled {
-                stop := this._stopReason != "" ? this._stopReason : "esc"
-                this._Notify("Stopped at " . typed . "/" . total)
-                break
-            }
-            if !WinActive("ahk_id " . targetId) {
-                stop := "focus"
-                this._Notify("Stopped at " . typed . "/" . total . ": session window lost focus")
-                break
-            }
-            if Mod(typed, this._progressEvery) = 0 {
-                this._ShowTip("Typing " . typed . "/" . total . "`nClick or Esc to stop")
-            }
-            if !this._inputSender.TypeText(A_LoopField) {
-                stop := "sendfail"
-                this._Notify("Send failed at " . typed . "/" . total . this._ErrorHint())
-                break
-            }
-            typed += 1
+    ; The prompt before the click, with every Enter (and Tab) the run will press, so multi-line text
+    ; can't run commands by surprise.
+    _ClickPrompt(text, afterKey) {
+        StrReplace(text, "`n", "`n", , &enterCount)
+        prompt := "Click the field to type " . StrLen(text) . " chars into"
+        if afterKey = "Enter" {
+            prompt .= enterCount = 0 ? " (then presses Enter)" : " (presses Enter " . (enterCount + 1) . "x, the last one after the text)"
+        } else if afterKey = "Tab" {
+            prompt .= enterCount = 0 ? " (then presses Tab)" : " (presses Enter " . enterCount . "x, then presses Tab)"
+        } else if enterCount > 0 {
+            prompt .= " (presses Enter " . enterCount . "x)"
         }
+        return prompt
+    }
+
+    ; After the target click: refuses the desktop, taskbar, Start and this script's own windows (whether
+    ; clicked or active), and a clicked window that didn't take focus. Returns the window to type into, or 0.
+    _CheckClickTarget() {
+        activeId := WinGetID("A")
+        for hwnd in [this._clickedRoot, activeId] {
+            info := this._WindowInfo(hwnd)
+            if hwnd && (info.own || this._IsBlockedClass(info.cls, info.exe)) {
+                this._Debug("target", "exe=" . info.exe . " class=" . info.cls . " blocked=1" . (info.own ? " own=1" : ""))
+                this._Notify(this._RefusalNotice(info.cls, info.exe, info.own), 5000)
+                return 0
+            }
+        }
+        if this._requireClickedFocus {
+            clicked := this._clickedRoot
+            ; NOTE: without this, the text (and a saved Enter) would go to whatever was active before the click
+            if !this._ClickTookFocus(clicked, activeId) && clicked && WinWaitActive(clicked, , 1) {
+                activeId := clicked  ; NOTE: slow to activate; waited up to 1s for it
+            }
+            if !this._ClickTookFocus(clicked, activeId) {
+                this._Debug("target", "blocked=notactive clicked=" . this._WindowInfo(clicked).cls . " active=" . this._WindowInfo(activeId).cls)
+                this._Notify("The window you clicked didn't take focus; nothing typed.", 5000)
+                return 0
+            }
+        }
+        info := this._WindowInfo(activeId)
+        this._Debug("target", "exe=" . info.exe . " class=" . info.cls . " blocked=0")
+        return activeId
+    }
+
+    ; Step mode has no click, so the window and control that have focus are checked instead.
+    ; Returns the window to type into, or 0 (and says why).
+    _CheckStepTarget(lineInfo) {
+        targetId := 0
+        try targetId := WinGetID("A")
+        info := this._WindowInfo(targetId)
+        if !targetId || info.own || this._IsBlockedClass(info.cls, info.exe) {
+            this._Debug("step", lineInfo . " result=blocked class=" . info.cls . (info.own ? " own=1" : ""))
+            this._Notify(targetId ? this._RefusalNotice(info.cls, info.exe, info.own) : "No window has focus; nothing typed.", 5000)
+            return 0
+        }
+        focused := 0
+        try focused := ControlGetFocus(targetId)
+        if focused {
+            controlClass := ""
+            try controlClass := RegExReplace(ControlGetClassNN(focused), "\d+$")
+            if this._IsNonTextControlClass(controlClass) {
+                this._Debug("step", lineInfo . " result=blocked control=" . controlClass)
+                this._Notify("Focused control isn't a text box; nothing typed.", 5000)
+                return 0
+            }
+        }
+        return targetId
+    }
+
+    ; Class, program and whether it's one of this script's own windows. Never the title.
+    _WindowInfo(hwnd) {
+        info := {cls: "", exe: "", own: false}
+        if !hwnd {
+            return info  ; guard: no window
+        }
+        try info.cls := WinGetClass(hwnd)
+        try info.exe := WinGetProcessName(hwnd)
+        try info.own := WinGetPID(hwnd) = ProcessExist()  ; NOTE: ProcessExist() with no name is this script's PID
+        return info
+    }
+
+    _RootOwner(hwnd) {
+        return hwnd ? DllCall("GetAncestor", "Ptr", hwnd, "UInt", 3, "Ptr") : 0  ; GA_ROOTOWNER
+    }
+
+    _ClickTookFocus(clickedRoot, activeId) {
+        return this._SameTarget(clickedRoot, activeId, this._RootOwner(clickedRoot), this._RootOwner(activeId))
+    }
+
+    ; Did the clicked window take focus? The same window, or windows with the same root owner, so a viewer
+    ; whose session canvas is an owned popup of its frame isn't refused.
+    _SameTarget(clickedRoot, activeId, clickedOwner, activeOwner) {
+        if !clickedRoot || !activeId {
+            return false  ; guard: one of them is unknown
+        }
+        return clickedRoot = activeId || (clickedOwner && clickedOwner = activeOwner)
+    }
+
+    _IsBlockedClass(cls, exe) {
+        if cls = "" || !this._blockedClasses.Has(StrLower(cls)) {
+            return false
+        }
+        if cls = ClipboardTyper.CORE_WINDOW_CLASS {
+            for name in ClipboardTyper.START_SEARCH_EXES {
+                if exe = name {
+                    return true
+                }
+            }
+            return false
+        }
+        return true
+    }
+
+    _IsNonTextControlClass(controlClass) {
+        return controlClass != "" && RegExMatch(controlClass, ClipboardTyper.NON_TEXT_CONTROLS) > 0
+    }
+
+    ; Why nothing was typed: names the window class and program (never the title), so a wrongly blocked
+    ; target can be allowed again.
+    _RefusalNotice(cls, exe, isOwn) {
+        if isOwn {
+            return "That's a Clipboard Typer window; nothing typed. Click the field to type into."
+        }
+        return "Won't type into the desktop, taskbar or Start (class " . cls . ", " . exe . "); nothing typed. "
+            . "To allow it, remove the class from BLOCKED_TARGET_CLASSES."
+    }
+
+    ; Whole-clipboard run: types the text, then the after-typing key if everything went through.
+    _TypeInto(targetId, text, afterKey) {
+        total := StrLen(text)
+        startTick := A_TickCount
+        stop := this._TypeChars(text, targetId, true, &typed)
         ms := A_TickCount - startTick
         ; NOTE: A_TickCount moves in 10-16 ms steps, so a very short run can measure 0 ms
         this._Debug("typed", typed . "/" . total . " ms=" . ms . " cps=" . (ms < 1 ? "-" : Format("{:.1f}", typed * 1000 / ms)) . " stop=" . stop)
         if stop != "done" {
+            if afterKey != "" {
+                this._Debug("after", "key=" . afterKey . " result=skipped-stopped")
+            }
+            this._Notify(this._StoppedMessage(stop, typed, total))
             return false
         }
-        this._Notify(this._DoneMessage(total, ms))
-        return true
+        sent := this._SendAfterKey(afterKey, targetId)
+        if sent = "" || sent = "sent" {
+            this._Notify(this._DoneMessage(total, ms, sent = "sent" ? afterKey : ""))
+            return true
+        }
+        this._Notify("Typed " . total . " chars; " . this._KeyMissed(afterKey, sent))
+        return false
     }
 
-    ; "Typed 42 chars in 1.4s (30/s)"; just "Typed 1 chars" when the run was too short to time.
-    _DoneMessage(chars, ms) {
+    ; The typing loop shared by both modes. Returns why it ended: done, esc, click, key, focus or sendfail.
+    _TypeChars(text, targetId, showProgress, &typed) {
+        total := StrLen(text)
+        typed := 0
+        Loop Parse text {
+            ; NOTE: checked per character so a click, Esc, key press or focus change stops it mid-text
+            if this._cancelled {
+                return this._stopReason != "" ? this._stopReason : "esc"
+            }
+            if !WinActive(targetId) {
+                return "focus"
+            }
+            if showProgress && Mod(typed, this._progressEvery) = 0 {
+                this._ShowTip("Typing " . typed . "/" . total . "`n" . (this._stopOnKeypress ? "Click, Esc or any key to stop" : "Click or Esc to stop"))
+            }
+            if !this._inputSender.TypeText(A_LoopField) {
+                return "sendfail"
+            }
+            typed += 1
+        }
+        return "done"
+    }
+
+    ; Presses the after-typing key, but only if nothing stopped the run and the target still has focus.
+    ; Returns "" (no key set), "sent", "fail" or "skipped-<reason>".
+    _SendAfterKey(afterKey, targetId) {
+        if afterKey = "" {
+            return ""
+        }
+        if this._cancelled {
+            result := "skipped-" . (this._stopReason != "" ? this._stopReason : "esc")
+        } else if !WinActive(targetId) {
+            result := "skipped-focus"
+        } else if !this._inputSender.TypeText(afterKey = "Enter" ? "`n" : "`t") {  ; NOTE: like a line break, so a key held at exit is released
+            result := "fail"
+        } else {
+            result := "sent"
+        }
+        this._Debug("after", "key=" . afterKey . " result=" . result)
+        return result
+    }
+
+    ; Blocks every key the user presses while it types (Esc is left to the Esc hotkey) and stops the run,
+    ; so the key can't mix into the text or reach the window, where an Enter would run a half-typed line.
+    ; Returns the InputHook, or "" when STOP_ON_KEYPRESS is off or it couldn't start.
+    ; NOTE: I2 ignores input sent at SendLevel 0 or 1: this script's own keystrokes and the test suite's.
+    _StartKeyGuard() {
+        if !this._stopOnKeypress {
+            return ""  ; guard: switched off
+        }
+        try {
+            guard := InputHook("L0 I2")
+            guard.KeyOpt("{All}", "+N +S")
+            guard.KeyOpt("{Esc}", "-N -S")
+            guard.OnKeyDown := this._realKeyCallback
+            guard.Start()
+            return guard
+        } catch Error as e {
+            this._LogError(A_ThisFunc, e.Message, e)
+            return ""
+        }
+    }
+
+    _StopKeyGuard(guard) {
+        if !IsObject(guard) {
+            return  ; guard: nothing started
+        }
+        try guard.Stop()
+    }
+
+    ; Key guard: a key the user pressed while it types.
+    _OnRealKey(guard, vk, sc) {
+        if this._stopReason = "" {
+            this._stopReason := "key"
+        }
+        this._cancelled := true
+        this._Debug("key", "phase=" . this._phase)  ; NOTE: never which key: it could be part of a password typed by hand
+    }
+
+    ; "Typed 42 chars in 1.4s (30/s)", "Typed 42 chars + Enter in 1.4s (30/s)"; without the time when
+    ; the run was too short to measure.
+    _DoneMessage(chars, ms, keyName := "") {
+        message := "Typed " . chars . " chars" . (keyName != "" ? " + " . keyName : "")
         if ms < 1 {
-            return "Typed " . chars . " chars"
+            return message
         }
-        return "Typed " . chars . " chars in " . Format("{:.1f}", ms / 1000) . "s (" . Round(chars * 1000 / ms) . "/s)"
+        return message . " in " . Format("{:.1f}", ms / 1000) . "s (" . Round(chars * 1000 / ms) . "/s)"
     }
 
-    ; Debug log: the program and window class of the target, never its title.
-    _LogTarget(targetId) {
-        if !this._logger.IsDebugEnabled() {
-            return  ; guard: nothing to record
+    _StoppedMessage(stop, typed, total) {
+        switch stop {
+            case "focus": return "Stopped at " . typed . "/" . total . ": session window lost focus"
+            case "key": return "Stopped at " . typed . "/" . total . ": key pressed"
+            case "sendfail": return "Send failed at " . typed . "/" . total . this._ErrorHint()
+            default: return "Stopped at " . typed . "/" . total
         }
-        exe := ""
-        cls := ""
-        try exe := WinGetProcessName("ahk_id " . targetId)
-        try cls := WinGetClass("ahk_id " . targetId)
-        this._Debug("target", "exe=" . exe . " class=" . cls)
+    }
+
+    ; "Enter skipped (window lost focus)", "Enter failed (see error.log)".
+    _KeyMissed(afterKey, sent) {
+        if sent = "fail" {
+            return afterKey . " failed" . this._ErrorHint()
+        }
+        switch sent {
+            case "skipped-focus": reason := "window lost focus"
+            case "skipped-key": reason := "key pressed"
+            default: reason := "stopped"
+        }
+        return afterKey . " skipped (" . reason . ")"
+    }
+
+    ; Step mode status after a press. Shows the typed line only when Show typed text is on, so a
+    ; password never appears on screen by default; when off it carries nothing derived from the text.
+    _StepStatus(index, total, item, keyName := "") {
+        status := this._showStepText ? index . "/" . total . ": " . item : index . "/" . total . " typed"
+        return keyName != "" ? status . " + " . keyName : status
+    }
+
+    ; "Stopped on line 2/5; ..." or, when a keystroke couldn't be sent, "Send failed on line 2/5 (see error.log); ...".
+    _StepStoppedStatus(index, total, afterKey, stop := "") {
+        lead := (stop = "sendfail" ? "Send failed" : "Stopped") . " on line " . index . "/" . total
+            . (stop = "sendfail" ? this._ErrorHint() : "")
+        if !this._stepSelectAllFirst {
+            return lead . "; part of it is in the field: clear it, then press again"
+        }
+        return lead . "; press again to retype it" . (afterKey != "" ? " (no " . afterKey . ")" : "")
+    }
+
+    _StepKeyMissedStatus(index, total, afterKey, sent) {
+        return index . "/" . total . " typed; " . this._KeyMissed(afterKey, sent) . ": press again to retype it without " . afterKey
+    }
+
+    _StepRetypedStatus(index, total, afterKey) {
+        return index . "/" . total . " retyped without " . afterKey . ": check the field, then press " . afterKey . " yourself"
+    }
+
+    _Advance(total) {
+        if total > 1 {
+            this._index += 1  ; NOTE: a single line retypes on every press, like the full typer
+        }
+    }
+
+    ; "", "Enter" or "Tab" in any case -> canonical spelling in &afterKey. False for anything else.
+    _CanonicalAfterKey(key, &afterKey) {
+        afterKey := ""
+        for name in ["", "Enter", "Tab"] {
+            if key = name {
+                afterKey := name
+                return true
+            }
+        }
+        return false
+    }
+
+    _AfterName(afterKey) {
+        return afterKey = "" ? "nothing" : afterKey
+    }
+
+    ; " (see error.log)" when the last error reached error.log, otherwise nothing.
+    _ErrorHint() {
+        return this._logger.LastErrorWritten() ? " (see error.log)" : ""
     }
 
     ; Re-registers the keyboard and mouse hooks just before typing, so they get keys before any hook a
@@ -1168,11 +1608,6 @@ class ClipboardTyper {
             this._LogError(A_ThisFunc, e.Message, e)
             return false
         }
-    }
-
-    ; " (see error.log)" when the last error reached error.log, otherwise nothing.
-    _ErrorHint() {
-        return this._logger.LastErrorWritten() ? " (see error.log)" : ""
     }
 
     ; Step mode: reads the clipboard as a list of lines. Returns "" if the clipboard can't be read.
@@ -1228,15 +1663,7 @@ class ClipboardTyper {
     ; OnClipboardChange: any new copy restarts step mode at line 1 of the new clipboard.
     _OnClipboardChange(*) {
         this._needsReload := true
-    }
-
-    ; Step mode status after a press. Shows the typed line only when Show typed text is on, so a
-    ; password never appears on screen by default; when off it carries nothing derived from the text.
-    _StepStatus(index, total, item) {
-        if this._showStepText {
-            return index . "/" . total . ": " . item
-        }
-        return index . "/" . total . " typed"
+        this._retryLine := false
     }
 
     _ShowTip(message) {

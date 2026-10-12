@@ -22,8 +22,9 @@ resultsFile := A_ScriptDir . "\results.txt"
 workDir := A_Temp . "\ClipboardTyperTests"
 
 ; One end-to-end pass per entry, in this order. Each pass runs a copy of the script with these settings
-; (plus SHOW_STARTUP_TIP := false, DEBUG_LOG := true and, unless the pass says otherwise, SAVE_SETTINGS := false)
-; and the E2E suite of the same name.
+; and the E2E suite of the same name. Every copy also gets SHOW_STARTUP_TIP := false, DEBUG_LOG := true,
+; STEP_SELECT_ALL_FIRST := true and STOP_ON_KEYPRESS := true, and, unless the pass says otherwise,
+; SAVE_SETTINGS := false and AFTER_TYPING := "", so an edited script can't change what the suites check.
 PASS_ORDER := ["Raw", "Text", "Step", "Enter", "StepEnter", "Saved"]
 PASS_SETTINGS := Map(
     "Raw",  Map("SEND_MODE", '"Raw"',  "STEP_MODE", "false"),
@@ -128,7 +129,8 @@ Finish("Passed: " . passes . "   Failed: " . fails . "`n`nDetails: tests\results
 ; line fails loudly instead of silently testing the defaults.
 MakeTestCopy(source, pass, settings) {
     copy := source
-    fixed := Map("SHOW_STARTUP_TIP", "false", "DEBUG_LOG", "true", "SAVE_SETTINGS", "false")
+    fixed := Map("SHOW_STARTUP_TIP", "false", "DEBUG_LOG", "true", "SAVE_SETTINGS", "false", "AFTER_TYPING", '""',
+        "STEP_SELECT_ALL_FIRST", "true", "STOP_ON_KEYPRESS", "true")
     for table in [fixed, settings] {  ; NOTE: the pass's own settings last, so they win (Saved turns SAVE_SETTINGS on)
         for name, value in table {
             copy := RegExReplace(copy, 'm)^' . name . ' := (?:"\w*"|\w+)', name . " := " . value, &hits)

@@ -51,7 +51,7 @@ Hover over the icon to see the hotkey and any setting that's switched on, such a
 
 ### Speed
 
-If characters go missing in a slow or laggy session, choose tray icon > **Speed** > **Slow** or **Very slow**. **Fast** suits a local window or a quick connection. Each speed is labelled by the pause after each key (Normal is 20 ms); **Custom...** sets any pause from 0 to 1000 ms. A change applies from the next run. Opening the tray menu while it types takes focus from the window, which stops the run. When a run finishes, the notice shows the real speed, like `Typed 42 chars in 1.4s (30/s)`.
+If characters go missing in a slow or laggy session, choose tray icon > **Speed** > **Slow** or **Very slow**. **Fast** suits a local window or a quick connection. Each speed is labelled by the pause after each key (Normal is 20 ms); **Custom...** sets any pause from 0 to 1000 ms. A change applies from the next run. Opening the tray menu while it types takes focus from the window, which stops the run; **Custom...** and **How to use** open only once the run has ended. When a run finishes, the notice shows the real speed, like `Typed 42 chars in 1.4s (30/s)`.
 
 ### After typing
 
@@ -61,7 +61,7 @@ The key is only pressed when the whole text went through and the window you clic
 
 ### Saved settings
 
-The **Speed** and **After typing** you pick in the tray are remembered in `ClipboardTyper.ini` next to the script (named after the script), and they win over `KEY_DELAY_MS`, `KEY_PRESS_MS` and `AFTER_TYPING`. To go back to the script's settings, choose tray icon > **Troubleshooting** > **Forget saved settings**. Show typed text and Debug logging are never saved; they start off every time.
+The **Speed** and **After typing** you pick in the tray are remembered in `ClipboardTyper.ini` next to the script (named after the script), and they win over `KEY_DELAY_MS`, `KEY_PRESS_MS` and `AFTER_TYPING`. To go back to the script's settings, choose tray icon > **Troubleshooting** > **Forget saved settings**. Show typed text and Debug logging are never saved; each starts from `STEP_SHOW_TEXT` or `DEBUG_LOG` (off by default) every time the script starts.
 
 The file holds only those choices:
 
@@ -82,7 +82,7 @@ Use this to type a list one item at a time, such as names copied from a spreadsh
 - presses the **After typing** key, if one is set, so each press can fill in a value and submit it (Enter) or move to the next field (Tab).
 - shows its progress, like `2/3 typed` or `2/3 typed + Enter`.
 
-The status doesn't show the text itself, so a password never appears on screen. To see each line as it's typed (`2/3: camera-02`), for example when working through a list of names, tick tray icon > **Step options** > **Show typed text**. It's off by default and off again every time the script starts. Untick it before typing a password.
+The status doesn't show the text itself, so a password never appears on screen. To see each line as it's typed (`2/3: camera-02`), for example when working through a list of names, tick tray icon > **Step options** > **Show typed text**. It's off by default (`STEP_SHOW_TEXT`) and goes back to that setting every time the script starts. Untick it before typing a password.
 
 After the last line it shows "End of list" and types nothing. Copy anything to start again at line 1. A clipboard with a single line types that line on every press.
 

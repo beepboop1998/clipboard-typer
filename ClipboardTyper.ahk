@@ -59,7 +59,7 @@ typer := ClipboardTyper(sender, appLog, MAX_CHARS, CLICK_TIMEOUT_SEC, FOCUS_SETT
     AFTER_TYPING, BLOCKED_TARGET_CLASSES, STOP_ON_KEYPRESS, REQUIRE_CLICKED_FOCUS)
 scriptDefaults := {delay: sender.GetDelayMs(), press: sender.GetPressMs(), after: typer.GetAfterTyping()}  ; NOTE: before saved choices apply
 store := SettingsStore(SettingsPath(), appLog, SAVE_SETTINGS)
-settingsSource := ApplySavedSettings(store, sender, typer, appLog)  ; "ini" when a saved choice was applied, else "script"
+ApplySavedSettings(store, sender, typer, appLog)  ; NOTE: also tells the store whether saved choices are in use (debug source=)
 
 hotkeyCallback := ObjBindMethod(typer, "OnHotkey")
 activeCallback := ObjBindMethod(typer, "IsActive")
@@ -148,7 +148,7 @@ DebugStartFields() {
     klid := Buffer(9 * 2, 0)  ; NOTE: the full layout ID, e.g. 00020409 for US-International, not just the language
     try layout := DllCall("GetKeyboardLayoutNameW", "Ptr", klid, "Int") ? StrGet(klid, "UTF-16") : ""
     return "ver=" . VERSION . " ahk=" . A_AhkVersion . " os=" . A_OSVersion . " admin=" . (A_IsAdmin ? 1 : 0)
-        . " mode=" . SEND_MODE . " delay=" . sender.GetDelayMs() . " press=" . sender.GetPressMs() . " source=" . settingsSource
+        . " mode=" . SEND_MODE . " delay=" . sender.GetDelayMs() . " press=" . sender.GetPressMs() . " source=" . (store.IsInEffect() ? "ini" : "script")
         . " step=" . (typer.IsStepMode() ? 1 : 0) . " after=" . (typer.GetAfterTyping() = "" ? "nothing" : typer.GetAfterTyping())
         . " layout=" . layout
 }
@@ -197,6 +197,7 @@ ApplySavedSettings(savedStore, keySender, clipTyper, logWriter) {
         joined .= (A_Index > 1 ? "," : "") . name
     }
     logWriter.Debug("ini", "read=" . (joined = "" ? "ok" : "invalid:" . joined))
+    savedStore.MarkInEffect(applied)
     return applied ? "ini" : "script"
 }
 
@@ -231,8 +232,9 @@ ShowHelp(*) {
         . "the next press types it again, without the After typing key.`n`n"
         . "Wrong symbols? The remote keyboard layout differs from yours; try SEND_MODE := `"Text`".`n"
         . "Characters dropped? Tray icon > Speed > Slow (or Very slow).`n"
-        . "Speed and After typing chosen in the tray are saved and override the script's settings "
-        . "(Troubleshooting > Forget saved settings).`n"
+        . (SAVE_SETTINGS ? "Speed and After typing chosen in the tray are saved and override the script's settings "
+            . "(Troubleshooting > Forget saved settings).`n"
+            : "Speed and After typing chosen in the tray last until the script restarts (SAVE_SETTINGS is off).`n")
         . "Settings are the constants near the top of the script: tray icon > Troubleshooting > Edit script settings, "
         . "save, then Troubleshooting > Reload script. Errors go to error.log next to the script; "
         . "Troubleshooting > Debug logging records more in debug.log.",
@@ -437,6 +439,10 @@ class TrayMenu {
 
     ; Tray > Speed > Custom...: asks for the pause between keys. Cancel changes nothing.
     OnCustomSpeed(*) {
+        if this._RefuseWhileBusy(TrayMenu.CUSTOM_SPEED_ITEM) {
+            this.Refresh()  ; NOTE: puts the radio dot back where it was
+            return false
+        }
         try {
             box := InputBox("Milliseconds between keys (0-1000). Now: " . this._sender.GetDelayMs()
                 . "`nHigher is slower; raise it if the session drops characters.", "Clipboard Typer: custom speed", "w320 h150", this._sender.GetDelayMs())
@@ -544,7 +550,20 @@ class TrayMenu {
     }
 
     OnHelp(*) {
+        if this._RefuseWhileBusy(TrayMenu.HELP_ITEM) {
+            return false
+        }
         return this._helpFn.Call()
+    }
+
+    ; A dialog opened during a run would sit on top of the paused run: the Esc hotkey would swallow its Esc
+    ; and the key guard would block its keys. So dialogs wait until the run ends. True when refused.
+    _RefuseWhileBusy(itemName) {
+        if !this._typer.IsBusy() {
+            return false
+        }
+        this._Notice("Stop the current run (Esc) or let it finish, then choose " . itemName . " again.")
+        return true
     }
 
     OnExitItem(*) {
@@ -729,6 +748,7 @@ class SettingsStore {
     _logger := ""
     _enabled := true        ; SAVE_SETTINGS: when false the file is never read or written
     _section := "Settings"
+    _inEffect := false      ; saved choices are in use (applied at startup or saved since); false after Forget
 
     ; --- Constructor ---
     __New(path, logWriter, enabled := true) {
@@ -743,6 +763,15 @@ class SettingsStore {
     ; --- Public Methods ---
     IsEnabled() {
         return this._enabled
+    }
+
+    ; For the debug start line: "ini" while saved choices are in use, "script" otherwise.
+    MarkInEffect(isOn) {
+        this._inEffect := !!isOn
+    }
+
+    IsInEffect() {
+        return this._inEffect
     }
 
     ; The saved value, or default when there is none, the file can't be read, or saving is off.
@@ -767,26 +796,34 @@ class SettingsStore {
         }
         try {
             IniWrite(value, this._path, this._section, key)
-            return true
         } catch Error as e {
             this._LogError(A_ThisFunc, "Couldn't save " . key . ": " . e.Message, e)
+            this._logger.Debug("ini", "write=fail key=" . key)  ; NOTE: never the value
             return false
         }
+        this._inEffect := true
+        this._logger.Debug("ini", "write=ok key=" . key)
+        return true
     }
 
     ; Deletes the saved settings. True when nothing is saved afterwards (also when nothing was saved).
+    ; NOTE: the caller goes back to the script's settings either way, so saved choices stop being in use.
     Forget() {
+        this._inEffect := false
         if !this._enabled || !FileExist(this._path) {
+            this._logger.Debug("ini", "forget=nothing")
             return true  ; guard: nothing to forget
         }
         try FileSetAttrib("-R", this._path)
         try {
             FileDelete(this._path)
-            return true
         } catch Error as e {
             this._LogError(A_ThisFunc, "Couldn't delete " . this._path . ": " . e.Message, e)
+            this._logger.Debug("ini", "forget=fail")
             return false
         }
+        this._logger.Debug("ini", "forget=ok")
+        return true
     }
 
     ; --- Private Methods ---
@@ -982,6 +1019,7 @@ class InputSender {
         if keys = "" {
             return false  ; guard: nothing to send
         }
+        this._inFlightVk := this._InFlightVkForKeys(keys)  ; NOTE: the A of Ctrl+A is held for KEY_PRESS_MS too
         try {
             SetKeyDelay(this._keyDelayMs, this._pressMs)  ; NOTE: per-thread setting, so set it on every call
             SendEvent(keys)
@@ -989,6 +1027,8 @@ class InputSender {
         } catch Error as e {
             this._LogError(A_ThisFunc, e.Message, e)
             return false
+        } finally {
+            this._inFlightVk := 0
         }
     }
 
@@ -1073,6 +1113,20 @@ class InputSender {
         }
     }
 
+    ; The main key of a combination such as "^a" or "{Enter}", so ReleaseInFlightKey can let go of it if
+    ; the script exits mid-press (the modifiers are ReleaseStuckModifiers' job). 0 when there isn't one.
+    _InFlightVkForKeys(keys) {
+        key := RegExReplace(RegExReplace(keys, "^[\^!+#]+"), "^\{(\w+)\}$", "$1")
+        if key = "" || (StrLen(key) > 1 && !RegExMatch(key, "^\w+$")) {
+            return 0  ; guard: not a single key
+        }
+        try {
+            return GetKeyVK(key)
+        } catch {
+            return 0
+        }
+    }
+
     _LogError(caller, message, err := "") {
         return this._logger.Error(caller, message, err)
     }
@@ -1086,7 +1140,8 @@ class ClipboardTyper {
     static START_SEARCH_EXES := ["StartMenuExperienceHost.exe", "ShellExperienceHost.exe", "SearchHost.exe", "SearchApp.exe", "SearchUI.exe"]
     ; Focused controls step mode won't type into (ClassNN without its number): typing a line there would
     ; press a button, toggle a checkbox or pick a list entry
-    static NON_TEXT_CONTROLS := "^(Button|ComboBox|ListBox|SysListView32|SysTreeView32|SysTabControl32|msctls_trackbar32)$"
+    ; NOTE: "(32)?" because a ClassNN like SysListView321 loses its class's own 32 with the instance number
+    static NON_TEXT_CONTROLS := "^(Button|ComboBox|ListBox|SysListView(32)?|SysTreeView(32)?|SysTabControl(32)?|msctls_trackbar(32)?)$"
 
     ; --- Properties ---
     _inputSender := ""
@@ -1103,6 +1158,8 @@ class ClipboardTyper {
     _progressEvery := 25    ; chars between progress tooltip updates
     _clearTipCallback := ""
     _realKeyCallback := ""  ; key guard: a key the user pressed while it types
+    _afterLogged := false   ; this run's "after" debug line is written (one per run, see _LogAfter)
+    _stopVk := 0            ; key guard: the key that stopped the run, held until it's let go (see _WaitForStopKeyRelease)
     _stepMode := false
     _stepSelectAllFirst := true
     _stepStatusMs := 1500
@@ -1179,6 +1236,8 @@ class ClipboardTyper {
         this._clickedRoot := 0
         this._cancelled := false
         this._stopReason := ""
+        this._stopVk := 0
+        this._afterLogged := false
         afterKey := this._afterTyping  ; NOTE: a change made mid-run applies from the next run, so this run does what its prompt said
         guard := ""
         try {
@@ -1208,6 +1267,10 @@ class ClipboardTyper {
             this._Notify("Error" . this._ErrorHint())
             return false
         } finally {
+            if afterKey != "" && !this._afterLogged && this._phase = "typing" {
+                this._LogAfter(afterKey, "skipped-stopped")  ; NOTE: typing began but the key's turn never came
+            }
+            this._WaitForStopKeyRelease()
             this._StopKeyGuard(guard)
             this._inputSender.ReleaseStuckModifiers()
             this._phase := ""
@@ -1263,6 +1326,8 @@ class ClipboardTyper {
         this._cancelled := false
         this._clicked := false
         this._stopReason := ""
+        this._stopVk := 0
+        this._afterLogged := false
         afterKey := this._afterTyping
         guard := ""
         try {
@@ -1323,9 +1388,6 @@ class ClipboardTyper {
             if stop != "done" {
                 this._retryLine := true  ; NOTE: the list stays on this line; the next press retypes it
                 this._Debug("step", lineInfo . " result=stopped stop=" . stop)
-                if afterKey != "" {
-                    this._Debug("after", "key=" . afterKey . " result=skipped-stopped")
-                }
                 this._Notify(this._StepStoppedStatus(index, total, afterKey, stop), this._stepStatusMs)
                 return false
             }
@@ -1336,7 +1398,7 @@ class ClipboardTyper {
                 this._Advance(total)
                 this._Debug("step", lineInfo . " result=retyped")
                 if afterKey != "" {
-                    this._Debug("after", "key=" . afterKey . " result=skipped-retry")
+                    this._LogAfter(afterKey, "skipped-retry")
                     this._Notify(this._StepRetypedStatus(index, total, afterKey), this._stepStatusMs)
                 } else {
                     this._Notify(this._StepStatus(index, total, item), this._stepStatusMs)
@@ -1358,6 +1420,10 @@ class ClipboardTyper {
             this._Notify("Error" . this._ErrorHint())
             return false
         } finally {
+            if afterKey != "" && !this._afterLogged && this._phase = "steptyping" {
+                this._LogAfter(afterKey, "skipped-stopped")  ; NOTE: stopped, Ctrl+A failed or it threw after the line began
+            }
+            this._WaitForStopKeyRelease()
             this._StopKeyGuard(guard)
             this._inputSender.ReleaseStuckModifiers()
             this._phase := ""
@@ -1410,6 +1476,11 @@ class ClipboardTyper {
 
     GetAfterTyping() {
         return this._afterTyping
+    }
+
+    ; True while a run waits for its click, types, or checks a step line.
+    IsBusy() {
+        return this._phase != ""
     }
 
     ; A status tooltip from outside a run (startup reminder, tray notices).
@@ -1519,7 +1590,7 @@ class ClipboardTyper {
         try focused := ControlGetFocus(targetId)
         if focused {
             controlClass := ""
-            try controlClass := RegExReplace(ControlGetClassNN(focused), "\d+$")
+            try controlClass := this._ControlClassFromClassNN(ControlGetClassNN(focused))
             if this._IsNonTextControlClass(controlClass) {
                 this._Debug("step", lineInfo . " result=blocked control=" . controlClass)
                 this._Notify("Focused control isn't a text box; nothing typed.", 5000)
@@ -1573,6 +1644,11 @@ class ClipboardTyper {
         return true
     }
 
+    ; "Button1" -> "Button". The class's own trailing digits go too ("SysListView321" -> "SysListView").
+    _ControlClassFromClassNN(classNN) {
+        return RegExReplace(classNN, "\d+$")
+    }
+
     _IsNonTextControlClass(controlClass) {
         return controlClass != "" && RegExMatch(controlClass, ClipboardTyper.NON_TEXT_CONTROLS) > 0
     }
@@ -1596,9 +1672,6 @@ class ClipboardTyper {
         ; NOTE: A_TickCount moves in 10-16 ms steps, so a very short run can measure 0 ms
         this._Debug("typed", typed . "/" . total . " ms=" . ms . " cps=" . (ms < 1 ? "-" : Format("{:.1f}", typed * 1000 / ms)) . " stop=" . stop)
         if stop != "done" {
-            if afterKey != "" {
-                this._Debug("after", "key=" . afterKey . " result=skipped-stopped")
-            }
             this._Notify(this._StoppedMessage(stop, typed, total))
             return false
         }
@@ -1649,8 +1722,15 @@ class ClipboardTyper {
         } else {
             result := "sent"
         }
-        this._Debug("after", "key=" . afterKey . " result=" . result)
+        this._LogAfter(afterKey, result)
         return result
+    }
+
+    ; Debug: what happened to the after-typing key. One line per run: a run that stopped after typing
+    ; began gets "skipped-stopped" from the finally of TypeClipboard or TypeNextLine.
+    _LogAfter(afterKey, result) {
+        this._afterLogged := true
+        this._Debug("after", "key=" . afterKey . " result=" . result)
     }
 
     ; Blocks every key the user presses while it types (Esc is left to the Esc hotkey) and stops the run,
@@ -1685,9 +1765,19 @@ class ClipboardTyper {
     _OnRealKey(guard, vk, sc) {
         if this._stopReason = "" {
             this._stopReason := "key"
+            this._stopVk := vk
+            this._Debug("key", "phase=" . this._phase)  ; NOTE: never which key: it could be part of a password typed by hand
         }
         this._cancelled := true
-        this._Debug("key", "phase=" . this._phase)  ; NOTE: never which key: it could be part of a password typed by hand
+    }
+
+    ; After a stop, keeps the key guard (or the Esc hotkey) on until the key that stopped the run is let go,
+    ; so a held key's auto-repeat can't reach the window once they end (an Enter would run the partial line).
+    _WaitForStopKeyRelease() {
+        key := this._stopVk ? Format("vk{:X}", this._stopVk) : (this._stopReason = "esc" ? "Esc" : "")
+        if key != "" {
+            try KeyWait(key, "T2")  ; NOTE: the physical state (keyboard hook), so it returns once the key is up
+        }
     }
 
     ; "Typed 42 chars in 1.4s (30/s)", "Typed 42 chars + Enter in 1.4s (30/s)"; without the time when
@@ -1740,7 +1830,11 @@ class ClipboardTyper {
     }
 
     _StepKeyMissedStatus(index, total, afterKey, sent) {
-        return index . "/" . total . " typed; " . this._KeyMissed(afterKey, sent) . ": press again to retype it without " . afterKey
+        lead := index . "/" . total . " typed; " . this._KeyMissed(afterKey, sent)
+        if !this._stepSelectAllFirst {
+            return lead . ": the line is in the field: clear it, then press again to retype it without " . afterKey
+        }
+        return lead . ": press again to retype it without " . afterKey
     }
 
     _StepRetypedStatus(index, total, afterKey) {

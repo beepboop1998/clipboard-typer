@@ -34,7 +34,8 @@ for preset in TrayMenu.SPEED_PRESETS {
 startAfterKey := typer.GetAfterTyping()  ; NOTE: AFTER_TYPING picks the starting After typing key
 startAfterShown := startAfterKey = "" ? "nothing" : startAfterKey
 tipStates := ""
-for state in [startAfterKey != "" ? "then " . startAfterKey : "", DEBUG_LOG ? "debug logging" : "", startSpeed != "Normal" ? StrLower(startSpeed) : ""] {
+for state in [STEP_MODE ? "step mode" : "", STEP_SHOW_TEXT ? "shows typed text" : "", startAfterKey != "" ? "then " . startAfterKey : "",
+    DEBUG_LOG ? "debug logging" : "", startSpeed != "Normal" ? StrLower(startSpeed) : ""] {
     if state != "" {
         tipStates .= (tipStates = "" ? " - " : ", ") . state
     }
@@ -85,6 +86,11 @@ Check("tray tip comes from _TipText", tray._TipText(), A_IconTip)
 
 ; Step mode toggle keeps the check mark and tray tooltip in sync
 Check("step mode off at start", typer.IsStepMode() ? "on" : "off", STEP_MODE ? "on" : "off")
+; NOTE: the toggle checks below start from off, whatever STEP_MODE and STEP_SHOW_TEXT say; both are restored after them
+if typer.IsStepMode() {
+    typer.ToggleStepMode()
+}
+tray.Refresh()
 tray.OnStepMode()
 Check("tray toggle turns step mode on", typer.IsStepMode() ? "on" : "off", "on")
 Check("step mode item ticked", MenuChecked(hTray, TrayMenu.STEP_ITEM), "ticked")
@@ -95,6 +101,10 @@ Check("step mode item unticked", MenuChecked(hTray, TrayMenu.STEP_ITEM), "untick
 
 ; Step status hides the typed text unless Show typed text is on (passwords stay off screen)
 Check("show typed text matches STEP_SHOW_TEXT at start", typer.IsShowingStepText() ? "on" : "off", STEP_SHOW_TEXT ? "on" : "off")
+if typer.IsShowingStepText() {
+    typer.ToggleShowStepText()
+}
+tray.Refresh()
 Check("status with text hidden", typer._StepStatus(2, 5, "hunter2"), "2/5 typed")
 tray.OnShowText()
 Check("tray toggle shows typed text", typer.IsShowingStepText() ? "on" : "off", "on")
@@ -106,6 +116,13 @@ Check("tray tip says typed text is shown", InStr(A_IconTip, "step mode, shows ty
 tray.OnStepMode()
 tray.OnShowText()
 Check("tray toggle hides typed text again", typer.IsShowingStepText() ? "on" : "off", "off")
+if typer.IsStepMode() != !!STEP_MODE {
+    typer.ToggleStepMode()
+}
+if typer.IsShowingStepText() != !!STEP_SHOW_TEXT {
+    typer.ToggleShowStepText()
+}
+tray.Refresh()
 
 ; Select field text first follows STEP_SELECT_ALL_FIRST and toggles from Step options
 Check("select-all item matches STEP_SELECT_ALL_FIRST", MenuChecked(hStep, TrayMenu.SELECT_ALL_ITEM), STEP_SELECT_ALL_FIRST ? "ticked" : "unticked")
@@ -148,6 +165,21 @@ Check("tray tip names a non-default speed", InStr(A_IconTip, "very slow") ? "yes
 Check("debug start line shows the speed in use", InStr(DebugStartFields(), " delay=80 press=30 ") ? "yes" : "no: " . DebugStartFields(), "yes")
 tray.OnSpeedPreset("Normal (20 ms)")
 Check("tray tip leaves Normal out", InStr(A_IconTip, "normal") ? "no: " . A_IconTip : "yes", "yes")
+
+; Dialogs from the tray wait until a run ends: a box on top of a paused run can't get Esc or keys
+trayDialogSeen := false
+lastNotice := ""
+tray.DefineProp("_Notice", {Call: SpyNotify})
+SetTimer(CloseTrayDialogs, 250)  ; NOTE: closes (and records) any dialog that opens, so a broken refusal fails instead of hanging
+typer._phase := "waiting"
+tray.OnCustomSpeed()
+Check("Custom... refused during a run", (trayDialogSeen ? "opened" : "refused") . " / " . (InStr(lastNotice, "Stop the current run") ? "notice" : "no notice"), "refused / notice")
+lastNotice := ""
+tray.OnHelp()
+Check("How to use refused during a run", (trayDialogSeen ? "opened" : "refused") . " / " . (InStr(lastNotice, "Stop the current run") ? "notice" : "no notice"), "refused / notice")
+typer._phase := ""
+SetTimer(CloseTrayDialogs, 0)
+tray.DeleteProp("_Notice")
 
 ; Custom speed: whole ms from 0 to 1000; a preset's delay applies that whole preset
 Check("custom 25 applied", tray._ApplyCustomDelay("25") ? "yes" : "no", "yes")
@@ -218,20 +250,34 @@ for c in [[1, 1, 0, 0, true], [1, 2, 0, 0, false], [1, 2, 5, 5, true], [1, 2, 5,
 for c in [["Button", true], ["ComboBox", true], ["SysListView32", true], ["Edit", false], ["RichEdit20W", false], ["Chrome_RenderWidgetHostHWND", false], ["", false]] {
     Check("non-text control " . c[1], typer._IsNonTextControlClass(c[1]) ? "refused" : "typed into", c[2] ? "refused" : "typed into")
 }
+; The step check reads a ClassNN (class + instance number), so test that path too
+for c in [["Button1", true], ["ComboBox2", true], ["SysListView321", true], ["SysTreeView321", true], ["SysTabControl321", true],
+    ["msctls_trackbar321", true], ["Edit1", false], ["RichEdit20W1", false], ["Chrome_RenderWidgetHostHWND1", false]] {
+    Check("focused control " . c[1], typer._IsNonTextControlClass(typer._ControlClassFromClassNN(c[1])) ? "refused" : "typed into", c[2] ? "refused" : "typed into")
+}
 
-; Step statuses after a press
+; Step statuses after a press. NOTE: the flags are pinned, so an edited STEP_SELECT_ALL_FIRST or STEP_SHOW_TEXT can't change them
+selectAllWas := typer.IsSelectingAllFirst()
+showTextWas := typer.IsShowingStepText()
+typer._stepSelectAllFirst := true
+typer._showStepText := false
 Check("step status + Enter", typer._StepStatus(2, 5, "x", "Enter"), "2/5 typed + Enter")
 Check("step status, key skipped", typer._StepKeyMissedStatus(2, 5, "Enter", "skipped-focus"), "2/5 typed; Enter skipped (window lost focus): press again to retype it without Enter")
 Check("step status, stopped", typer._StepStoppedStatus(2, 5, "Enter"), "Stopped on line 2/5; press again to retype it (no Enter)")
 Check("step status, send failed", typer._StepStoppedStatus(2, 5, "", "sendfail"), "Send failed on line 2/5" . typer._ErrorHint() . "; press again to retype it")
 Check("step status, retyped", typer._StepRetypedStatus(2, 5, "Tab"), "2/5 retyped without Tab: check the field, then press Tab yourself")
-typer.ToggleSelectAllFirst()
+typer._stepSelectAllFirst := false
 Check("step status, stopped without select-all", typer._StepStoppedStatus(2, 5, ""), "Stopped on line 2/5; part of it is in the field: clear it, then press again")
-typer.ToggleSelectAllFirst()
+Check("step status, key skipped without select-all", typer._StepKeyMissedStatus(2, 5, "Enter", "skipped-focus"),
+    "2/5 typed; Enter skipped (window lost focus): the line is in the field: clear it, then press again to retype it without Enter")
+typer._stepSelectAllFirst := selectAllWas
+typer._showStepText := showTextWas
 
 ; The key guard stops a run on a key pressed at a real-input level, and ignores this script's own keys
 typer._cancelled := false
 typer._stopReason := ""
+stopOnKeypressWas := typer._stopOnKeypress
+typer._stopOnKeypress := true  ; NOTE: the check needs the guard even when STOP_ON_KEYPRESS is false
 keyGuard := typer._StartKeyGuard()
 SendEvent("{F24}")  ; NOTE: SendLevel 0, like the script's own typing
 Sleep(100)
@@ -242,8 +288,31 @@ SendLevel(0)
 Sleep(100)
 Check("key guard stops on a key at a real-input level", (typer._cancelled ? "stopped " : "running ") . typer._stopReason, "stopped key")
 typer._StopKeyGuard(keyGuard)
+typer._stopOnKeypress := stopOnKeypressWas
 typer._cancelled := false
 typer._stopReason := ""
+typer._stopVk := 0
+Check("no key guard when STOP_ON_KEYPRESS is false", ClipboardTyper(sender, appLog, 2000, 10, 300, false, true, 1500, false, "", "", false)._StartKeyGuard(), "")
+
+; The after-typing key is checked again just before it's sent: a stop or a lost target skips it
+typer._cancelled := true
+typer._stopReason := "click"
+Check("after key skipped after a click", typer._SendAfterKey("Enter", 1), "skipped-click")
+typer._stopReason := "key"
+Check("after key skipped after a key press", typer._SendAfterKey("Enter", 1), "skipped-key")
+typer._cancelled := false
+typer._stopReason := ""
+Check("after key skipped when the target isn't active", typer._SendAfterKey("Enter", 1), "skipped-focus")  ; NOTE: HWND 1 is never active
+Check("no after key set: nothing to send", typer._SendAfterKey("", 1), "")
+
+; A click while a step line types stops it, as in a full run
+typer._phase := "steptyping"
+typer.OnClick()
+Check("click during a step line stops it", (typer._cancelled ? "stopped " : "running ") . typer._stopReason, "stopped click")
+typer._phase := ""
+typer._cancelled := false
+typer._stopReason := ""
+typer._clicked := false
 
 ; Step mode messages for the paths that type nothing, with _Notify swapped for a spy
 lastNotice := ""
@@ -274,10 +343,52 @@ selectAllWas := typer.IsSelectingAllFirst()
 typer._stepSelectAllFirst := false
 typer.TypeNextLine("")
 Check("step press resets a stale Esc", seenCancelled, "not cancelled")
+; A typed line whose after-typing key is skipped stays on that line; the next press retypes it without the key
+afterWas := typer.GetAfterTyping()
+typer.SetAfterTyping("Enter")
+typer._lines := ["a", "b"]
+typer._index := 1
+typer._retryLine := false
+typer.TypeNextLine("")  ; NOTE: the stubbed target is HWND 1, which is never active, so Enter is skipped
+Check("step key skipped keeps the line", typer._index . " " . (typer._retryLine ? "retry" : "no retry") . " " . (InStr(lastNotice, "Enter skipped (window lost focus)") ? "notice" : lastNotice), "1 retry notice")
+typer.TypeNextLine("")
+Check("the retyped line moves on without the key", typer._index . " " . (typer._retryLine ? "retry" : "no retry") . " " . (InStr(lastNotice, "retyped without Enter") ? "notice" : lastNotice), "2 no retry notice")
+typer.SetAfterTyping(afterWas)
+; A step line runs with the key guard on: a key at a real-input level stops it
+typer._lines := ["x"]
+typer._index := 1
+typer._retryLine := false
+seenStop := "spy not called"
+stopOnKeypressWas := typer._stopOnKeypress
+typer._stopOnKeypress := true
+typer.DefineProp("_TypeChars", {Call: SpyTypeCharsKey})
+typer.TypeNextLine("")
+Check("a step line runs with the key guard on", seenStop, "key")
+typer._stopOnKeypress := stopOnKeypressWas
+; The real target checks refuse this script's own windows, whether clicked or focused
+typer.DeleteProp("_CheckStepTarget")
+ownGui := Gui("+ToolWindow", "Unit own window")
+ownGui.Show("w160 h40")
+WinWaitActive(ownGui.Hwnd, , 2)
+Check("own window detected", typer._WindowInfo(ownGui.Hwnd).own ? "own" : "other", "own")
+typer._clickedRoot := ownGui.Hwnd
+lastNotice := ""
+clickResult := "threw"
+try clickResult := typer._CheckClickTarget()
+Check("click on an own window refused", clickResult . " / " . lastNotice, "0 / That's a Clipboard Typer window; nothing typed. Click the field to type into.")
+typer._clickedRoot := 0
+typer._lines := ["x"]
+typer._index := 1
+seenCancelled := "spy not called"
+typer.DefineProp("_TypeChars", {Call: SpyTypeChars})
+typer.TypeNextLine("")
+Check("step with an own window focused types nothing", seenCancelled . " / " . lastNotice, "spy not called / That's a Clipboard Typer window; nothing typed. Click the field to type into.")
+ownGui.Destroy()
 typer._stepSelectAllFirst := selectAllWas
-for name in ["_CheckStepTarget", "_ReinstallHooks", "_TypeChars"] {
+for name in ["_ReinstallHooks", "_TypeChars"] {
     typer.DeleteProp(name)
 }
+typer._retryLine := false
 typer.DeleteProp("_Notify")
 typer._needsReload := true
 
@@ -347,22 +458,37 @@ try {
     SendEvent("{Blind}{LShift up}")  ; NOTE: also clears this script's own record of the key
 }
 Check("nothing to release when no modifier is down", unitSender.ReleaseStuckModifiers(), 0)
+; The exit handler can release the key of a combination that was mid-press, like the A of Ctrl+A
+for c in [["^a", 0x41], ["{Enter}", 0x0D], ["+{Tab}", 0x09], ["^+!", 0], ["{Raw}ab", 0]] {
+    Check("key tracked for an exit mid-press: " . c[1], unitSender._InFlightVkForKeys(c[1]), c[2])
+}
+unitSender.Send("{F24}")
+Check("no key tracked once Send returns", unitSender._inFlightVk, 0)
 
 ; Saved settings: a store in the temp folder, fixtures written with IniWrite (never FileAppend: a UTF-8
 ; BOM would hide [Settings] from the INI functions)
 iniPath := unitDir . "\saved.ini"
 unitStore := SettingsStore(iniPath, unitLog, true)
 Check("store round trip", (unitStore.Write("KeyDelayMs", 40) && unitStore.Read("KeyDelayMs", "x") = "40") ? "yes" : "no", "yes")
+Check("a saved choice is in effect", unitStore.IsInEffect() ? "in effect" : "not in effect", "in effect")
 Check("store default for a missing key", unitStore.Read("NoSuchKey", "dflt"), "dflt")
 Check("store write into a missing folder fails", SettingsStore(unitDir . "\no-such-folder\x.ini", unitLog, true).Write("KeyDelayMs", 1) ? "saved" : "failed", "failed")
 Check("the failed write is logged", InStr(FileRead(unitDir . "\error.log"), "Couldn't save KeyDelayMs") ? "yes" : "no", "yes")
+; Saving and forgetting are in debug.log by key and result, never with the value (1000 appears nowhere else)
+unitLog.SetDebugEnabled(true)
+unitStore.Write("KeyPressMs", 1000)
+SettingsStore(unitDir . "\no-such-folder\x.ini", unitLog, true).Write("KeyPressMs", 1000)
+unitDebug := FileRead(unitLog.LogPath("debug"))
+Check("saves are logged by key, never with the value", (InStr(unitDebug, "DEBUG ini write=ok key=KeyPressMs") && InStr(unitDebug, "DEBUG ini write=fail key=KeyPressMs")
+    && !InStr(unitDebug, "1000")) ? "yes" : "no: " . unitDebug, "yes")
 FileDelete(iniPath)
-for c in [["abc", "", "20/10 Enter", "corrupt speed keeps the script's"],
-    ["", "Space", "20/10 Enter", "unknown AfterTyping keeps the script's"],
-    ["", "Nothing", "20/10 ", "saved Nothing overrides AFTER_TYPING Enter"],
-    ["", "enter", "20/10 Enter", "AfterTyping in any case"],
-    ["", "Tab `; note", "20/10 Enter", "an inline comment makes the value invalid"],
-    ["60", "Tab", "60/10 Tab", "saved speed and Tab applied"]] {
+; NOTE: c[5]: a saved choice was applied, so the store reports it in effect (debug source=ini)
+for c in [["abc", "", "20/10 Enter", "corrupt speed keeps the script's", false],
+    ["", "Space", "20/10 Enter", "unknown AfterTyping keeps the script's", false],
+    ["", "Nothing", "20/10 ", "saved Nothing overrides AFTER_TYPING Enter", true],
+    ["", "tAB", "20/10 Tab", "AfterTyping in any case", true],
+    ["", "Tab `; note", "20/10 Enter", "an inline comment makes the value invalid", false],
+    ["60", "Tab", "60/10 Tab", "saved speed and Tab applied", true]] {
     try FileDelete(iniPath)
     if c[1] != "" {
         IniWrite(c[1], iniPath, "Settings", "KeyDelayMs")
@@ -372,8 +498,10 @@ for c in [["abc", "", "20/10 Enter", "corrupt speed keeps the script's"],
     }
     probeSender := InputSender("Raw", 20, 10, unitLog)
     probeTyper := ClipboardTyper(probeSender, unitLog, 2000, 10, 300, false, true, 1500, false, "Enter")
-    ApplySavedSettings(SettingsStore(iniPath, unitLog, true), probeSender, probeTyper, unitLog)
-    Check("saved settings: " . c[4], probeSender.GetDelayMs() . "/" . probeSender.GetPressMs() . " " . probeTyper.GetAfterTyping(), c[3])
+    probeStore := SettingsStore(iniPath, unitLog, true)
+    ApplySavedSettings(probeStore, probeSender, probeTyper, unitLog)
+    Check("saved settings: " . c[4], probeSender.GetDelayMs() . "/" . probeSender.GetPressMs() . " " . probeTyper.GetAfterTyping()
+        . (probeStore.IsInEffect() ? " (in effect)" : ""), c[3] . (c[5] ? " (in effect)" : ""))
 }
 FileDelete(iniPath)
 IniWrite(40, iniPath, "Settings", "KeyDelayMs")
@@ -382,6 +510,7 @@ probeTyper := ClipboardTyper(probeSender, unitLog, 2000, 10, 300)
 Check("SAVE_SETTINGS off: nothing is read", SettingsStore(iniPath, unitLog, false).Read("KeyDelayMs", "x"), "x")
 Check("SAVE_SETTINGS off: the script's speed stays", (ApplySavedSettings(SettingsStore(iniPath, unitLog, false), probeSender, probeTyper, unitLog) . " " . probeSender.GetDelayMs()), "script 20")
 Check("Forget deletes the file", (unitStore.Forget() && !FileExist(iniPath)) ? "yes" : "no", "yes")
+Check("forgotten choices are not in effect", unitStore.IsInEffect() ? "in effect" : "not in effect", "not in effect")
 errorSize := FileGetSize(unitDir . "\error.log")
 Check("Forget with nothing saved is fine, twice", (unitStore.Forget() && unitStore.Forget() && FileGetSize(unitDir . "\error.log") = errorSize) ? "yes" : "no", "yes")
 IniWrite(1, iniPath, "Settings", "KeyDelayMs")
@@ -393,16 +522,21 @@ errorSize := FileGetSize(unitDir . "\error.log")
 Check("Forget of a locked file fails and is logged", (unitStore.Forget() ? "deleted" : "failed") . (FileGetSize(unitDir . "\error.log") > errorSize ? " logged" : " not logged"), "failed logged")
 lockedIni.Close()
 try FileDelete(iniPath)
+unitDebug := FileRead(unitLog.LogPath("debug"))
+Check("Forget results are logged", (InStr(unitDebug, "DEBUG ini forget=ok") && InStr(unitDebug, "DEBUG ini forget=nothing") && InStr(unitDebug, "DEBUG ini forget=fail")) ? "yes" : "no", "yes")
+unitLog.SetDebugEnabled(false)
 
 ; The real tray saves what you pick and Forget goes back to the script's settings
 trayIni := SettingsPath()
 if SAVE_SETTINGS {
     tray.OnSpeedPreset("Slow (40 ms)")
+    Check("debug start line says source=ini once a choice is saved", InStr(DebugStartFields(), " source=ini ") ? "yes" : "no: " . DebugStartFields(), "yes")
     tray.OnAfterTyping("Press Tab")
     Check("tray saves speed and After typing", IniRead(trayIni, "Settings", "KeyDelayMs", "-") . "/" . IniRead(trayIni, "Settings", "KeyPressMs", "-") . " " . IniRead(trayIni, "Settings", "AfterTyping", "-"), "40/20 Tab")
     tray.OnAfterTyping("Nothing")
     Check("tray saves Nothing explicitly", IniRead(trayIni, "Settings", "AfterTyping", "-"), "Nothing")
     tray.OnForgetSettings()
+    Check("debug start line says source=script after Forget", InStr(DebugStartFields(), " source=script ") ? "yes" : "no: " . DebugStartFields(), "yes")
     Check("Forget saved settings restores the script's settings", (FileExist(trayIni) ? "file kept " : "") . sender.GetDelayMs() . "/" . sender.GetPressMs() . " " . TickedItems(hSpeed) . " " . typer.GetAfterTyping(),
         scriptDefaults.delay . "/" . scriptDefaults.press . " " . startItem . " " . startAfterKey)
     IniWrite("enter", trayIni, "Settings", "AfterTyping")
@@ -410,12 +544,35 @@ if SAVE_SETTINGS {
     tray.Refresh()
     Check("saved enter shows in the tray as Enter", TickedItems(hAfter) . " / " . (InStr(MenuNames(hTray), "|After typing: Enter|") ? "labelled" : "not labelled"), "Press Enter / labelled")
     tray.OnForgetSettings()
+    Check("Forget saved settings restores After typing", typer.GetAfterTyping() . " " . TickedItems(hAfter), startAfterKey . " " . (startAfterKey = "" ? "Nothing" : "Press " . startAfterKey))
 } else {
     ; NOTE: SAVE_SETTINGS := false in the script: tray choices must never create the file
     tray.OnSpeedPreset("Slow (40 ms)")
-    Check("SAVE_SETTINGS off: the tray saves nothing", FileExist(trayIni) ? "saved" : "nothing saved", "nothing saved")
+    Check("SAVE_SETTINGS off: the tray saves nothing", (FileExist(trayIni) ? "saved" : "nothing saved") . (InStr(DebugStartFields(), " source=script ") ? "" : ", source not script"), "nothing saved")
     tray.OnForgetSettings()
 }
+
+; One "after" debug line per run: a step line that stops or throws, or a full run that throws once typing
+; began, logs skipped-stopped exactly once (from the finally), with the typing itself replaced by spies
+afterDir := unitDir . "\after"
+DirCreate(afterDir)
+afterLog := Logger(afterDir, true)
+probeTyper := ClipboardTyper(InputSender("Raw", 20, 10, afterLog), afterLog, 2000, 10, 300, false, false, 1500, false, "Enter")
+probeTyper._lines := ["x"]
+probeTyper._needsReload := false
+probeTyper.DefineProp("_CheckStepTarget", {Call: (this, *) => 1})
+probeTyper.DefineProp("_ReinstallHooks", {Call: (this, *) => false})
+probeTyper.DefineProp("_Notify", {Call: (this, *) => ""})
+probeTyper.DefineProp("_TypeChars", {Call: StoppedTypeChars})
+probeTyper.TypeNextLine("")
+Check("a stopped step line logs skipped-stopped once", CountIn(FileRead(afterLog.LogPath("debug")), "after key=Enter result=skipped-stopped"), 1)
+probeTyper.DefineProp("_TypeChars", {Call: FailingTypeChars})
+probeTyper.TypeNextLine("")
+Check("a step line that throws logs skipped-stopped once", CountIn(FileRead(afterLog.LogPath("debug")), "after key=Enter result=skipped-stopped"), 2)
+probeTyper.DefineProp("_ReadClipboard", {Call: (this, *) => "abc"})
+probeTyper.DefineProp("_WaitForTargetClick", {Call: (this, *) => 1})
+probeTyper.TypeClipboard()
+Check("a full run that throws mid-typing logs skipped-stopped once", CountIn(FileRead(afterLog.LogPath("debug")), "after key=Enter result=skipped-stopped"), 3)
 try DirDelete(unitDir, true)
 
 ; Help: open it the way the tray menu does, read the dialog, close it
@@ -444,7 +601,11 @@ GrabHelp() {
     Check("help says how to apply edited settings", InStr(text, "Reload script") ? "yes" : "no", "yes")
     Check("help points dropped characters to Speed", (InStr(text, "Speed > Slow") && !InStr(text, "Raise KEY_DELAY_MS")) ? "yes" : "no", "yes")
     Check("help explains After typing", InStr(text, "After typing") ? "yes" : "no", "yes")
-    Check("help mentions Forget saved settings", InStr(text, "Forget saved settings") ? "yes" : "no", "yes")
+    if SAVE_SETTINGS {
+        Check("help mentions Forget saved settings", InStr(text, "Forget saved settings") ? "yes" : "no", "yes")
+    } else {
+        Check("help says tray choices last until restart", (InStr(text, "until the script restarts") && !InStr(text, "are saved")) ? "yes" : "no", "yes")
+    }
 }
 
 ; --- Menu inspection (Win32), so the checks see the menu the user sees ---
@@ -505,6 +666,41 @@ Out(line) {
 
 Check(name, got, want) {
     Out((got == want ? "PASS " : "FAIL ") . name . (got == want ? "" : "  | got=" . got . "  want=" . want))
+}
+
+; Presses a key at a real-input level mid-line, as a person would, and records why the line stopped.
+SpyTypeCharsKey(this, text, targetId, showProgress, &typed) {
+    SendLevel(2)
+    SendEvent("{F24}")
+    SendLevel(0)
+    Sleep(100)
+    global seenStop := this._stopReason
+    typed := StrLen(text)
+    return "done"
+}
+
+CloseTrayDialogs() {
+    global trayDialogSeen
+    for title in ["Clipboard Typer: custom speed", "Clipboard Typer " . VERSION . ": How to use"] {
+        if WinExist(title) {
+            trayDialogSeen := true
+            try WinClose(title)
+        }
+    }
+}
+
+StoppedTypeChars(this, text, targetId, showProgress, &typed) {
+    typed := 0
+    return "esc"
+}
+
+FailingTypeChars(this, text, targetId, showProgress, &typed) {
+    throw Error("probe failure")
+}
+
+CountIn(text, needle) {
+    StrReplace(text, needle, , , &count)
+    return count
 }
 
 SpyTypeChars(this, text, targetId, showProgress, &typed) {

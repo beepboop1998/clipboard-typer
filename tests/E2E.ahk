@@ -130,6 +130,18 @@ RunSuite() {
     Check("T4 Esc during typing stops it", IsPartial(got, longText), StrLen(got) . "/80 chars")
     Check("T4 debug log: stop=esc", LogHas("DEBUG typed \d+/80 ms=\d+ cps=\S+ stop=esc", mark), LogTail(mark))
 
+    ; T14 a key pressed while it types stops it, and the key never reaches the field
+    ; NOTE: sent at SendLevel 2, which the key guard treats like a person's key (this file's level 1 is ignored)
+    Clear()
+    mark := LogMark()
+    Trigger(longText)
+    ClickIn("CT_Target")
+    Sleep(1200)
+    PressAsPerson("x")
+    got := WaitIdle("CT_Target")
+    Check("T14 a key press stops typing and is blocked", IsPartial(got, longText) && !InStr(got, "x")
+        && LogHas("DEBUG typed \d+/80 ms=\d+ cps=\S+ stop=key", mark), StrLen(got) . "/80 chars, got=" . Show(got) . "; " . LogTail(mark))
+
     ; T5 another window taking focus stops it
     ; NOTE: rarely one char can land in the other window (check-then-send race); LeakProbe.ahk measures the rate
     Clear()
@@ -258,6 +270,23 @@ RunStepSuite() {
     got := WaitIdle("CT_Target")
     Check("S10b Esc stops a step line", IsPartial(got, longLine) && LogHas("DEBUG step line=1/2 len=80 result=stopped stop=esc", mark), StrLen(got) . "/80 chars; " . LogTail(mark))
 
+    ; S10c a click in the field stops a step line, as in a full run
+    Clear()
+    mark := LogMark()
+    StartStepLine(longLine . "`r`nnext c")
+    ClickIn("CT_Target")
+    got := WaitIdle("CT_Target")
+    Check("S10c a click stops a step line", IsPartial(got, longLine) && LogHas("DEBUG step line=1/2 len=80 result=stopped stop=click", mark), StrLen(got) . "/80 chars; " . LogTail(mark))
+
+    ; S10d a key press stops a step line, and the key never reaches the field
+    Clear()
+    mark := LogMark()
+    StartStepLine(longLine . "`r`nnext d")
+    PressAsPerson("x")
+    got := WaitIdle("CT_Target")
+    Check("S10d a key press stops a step line and is blocked", IsPartial(got, longLine) && !InStr(got, "x")
+        && LogHas("DEBUG step line=1/2 len=80 result=stopped stop=key", mark), StrLen(got) . "/80 chars, got=" . Show(got) . "; " . LogTail(mark))
+
     ; S12 a step press is logged as a result, and the line itself never reaches the logs
     Clear()
     mark := LogMark()
@@ -290,7 +319,7 @@ RunEnterSuite() {
     Send("{Esc}")
     got := WaitIdle("CT_Target")
     Check("T10 a run stopped with Esc gets no Enter", IsPartial(got, longText) && LogHas("DEBUG typed \d+/80 .*stop=esc", mark)
-        && LogHas("DEBUG after key=Enter result=skipped-stopped", mark) && !LogHas("result=sent", mark), StrLen(got) . "/80 chars; " . LogTail(mark))
+        && LogCount("DEBUG after key=Enter result=skipped-stopped", mark) = 1 && !LogHas("result=sent", mark), StrLen(got) . "/80 chars; " . LogTail(mark))
 }
 
 ; The "StepEnter" pass runs the typer with STEP_MODE := true and AFTER_TYPING := "Enter".
@@ -311,7 +340,7 @@ RunStepEnterSuite() {
     WinActivate("CT_Other")
     got := WaitIdle("CT_Target")
     other := ControlGetText("Edit1", "CT_Other")
-    Check("S11 a stopped step line gets no Enter", IsPartial(got, longLine) && other == "" && LogHas("DEBUG after key=Enter result=skipped-stopped", mark), StrLen(got) . "/80 chars, other=" . Show(other) . "; " . LogTail(mark))
+    Check("S11 a stopped step line gets no Enter", IsPartial(got, longLine) && other == "" && LogCount("DEBUG after key=Enter result=skipped-stopped", mark) = 1, StrLen(got) . "/80 chars, other=" . Show(other) . "; " . LogTail(mark))
     got := StepPress()
     Check("S11 the retyped line gets no Enter either", got == longLine && LogHas("DEBUG after key=Enter result=skipped-retry", mark), "got " . StrLen(got) . " chars" . (InStr(got, "`n") ? " with a line break" : "") . "; " . LogTail(mark))
 }
@@ -326,6 +355,14 @@ RunSavedSuite() {
     got := WaitIdle("CT_Target")
     Check("P1 saved After typing: Enter applies", got == "abc`r`n", "got=" . Show(got))
     Check("P1 saved speed applies", LogHas("DEBUG start .* delay=60 press=20 source=ini"), LogTail())
+}
+
+; Presses a key at SendLevel 2: the typer's key guard ignores levels 0 and 1 (its own keys and this file's), so
+; this is how a person's key press looks to it.
+PressAsPerson(key) {
+    SendLevel(2)
+    Send(key)
+    SendLevel(1)
 }
 
 ; Copies the list, presses the hotkey in the target field, and returns once the first line has started typing.
@@ -432,6 +469,17 @@ LogHas(pattern, mark := 0) {
         }
     }
     return false
+}
+
+; How many lines after mark match the regex (0 when debug.log is missing).
+LogCount(pattern, mark := 0) {
+    count := 0
+    for line in StrSplit(ReadIfExists(debugLog), "`n", "`r") {
+        if A_Index > mark && RegExMatch(line, pattern) {
+            count += 1
+        }
+    }
+    return count
 }
 
 ; The first match after mark (a RegExMatch object), or "" when none.

@@ -1,13 +1,14 @@
 /*
     RunTests.ahk
-    Responsibility: Runs Unit.ahk, then E2E.ahk against copies of ClipboardTyper.ahk in Raw mode, Text mode
-                    and step mode, and writes everything to tests\results.txt.
+    Responsibility: Runs Unit.ahk, then E2E.ahk against copies of ClipboardTyper.ahk in Raw mode, Text mode,
+                    step mode, with After typing: Enter and with saved settings, and writes everything to
+                    tests\results.txt.
     Dependencies: Unit.ahk, E2E.ahk, TestTarget.ahk, LeakProbe.ahk (optional), ..\ClipboardTyper.ahk
     Author: reuben
     Usage: double-click. Arguments (optional, any order):
              leak        also run LeakProbe.ahk (adds about 2 minutes)
              unattended  skip the prompts; exit code = number of FAIL lines
-    NOTE: the end-to-end part drives the real mouse and keyboard for about 3 minutes. Don't touch them.
+    NOTE: the end-to-end part drives the real mouse and keyboard for about 5 minutes. Don't touch them.
 */
 #Requires AutoHotkey v2.0
 #SingleInstance Force
@@ -20,6 +21,19 @@ scriptPath := A_ScriptDir . "\..\ClipboardTyper.ahk"
 resultsFile := A_ScriptDir . "\results.txt"
 workDir := A_Temp . "\ClipboardTyperTests"
 
+; One end-to-end pass per entry, in this order. Each pass runs a copy of the script with these settings
+; and the E2E suite of the same name. Every copy also gets SHOW_STARTUP_TIP := false, DEBUG_LOG := true,
+; STEP_SELECT_ALL_FIRST := true and STOP_ON_KEYPRESS := true, and, unless the pass says otherwise,
+; SAVE_SETTINGS := false and AFTER_TYPING := "", so an edited script can't change what the suites check.
+PASS_ORDER := ["Raw", "Text", "Step", "Enter", "StepEnter", "Saved"]
+PASS_SETTINGS := Map(
+    "Raw",  Map("SEND_MODE", '"Raw"',  "STEP_MODE", "false"),
+    "Text", Map("SEND_MODE", '"Text"', "STEP_MODE", "false"),
+    "Step", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "true"),
+    "Enter", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "false", "AFTER_TYPING", '"Enter"'),
+    "StepEnter", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "true", "AFTER_TYPING", '"Enter"'),
+    "Saved", Map("SEND_MODE", '"Raw"',  "STEP_MODE", "false", "SAVE_SETTINGS", "true"))
+
 ; Guard: a running ClipboardTyper would also answer the test hotkey
 DetectHiddenWindows(true)
 for hwnd in WinGetList("ahk_class AutoHotkey") {
@@ -31,7 +45,7 @@ DetectHiddenWindows(false)
 
 if !unattended {
     answer := MsgBox("The end-to-end tests drive your mouse and keyboard for about "
-        . (withLeak ? 5 : 3) . " minutes. Don't touch them until the results appear.`n`nStart?",
+        . (withLeak ? 7 : 5) . " minutes. Don't touch them until the results appear.`n`nStart?",
         "ClipboardTyper tests", "OKCancel Icon!")
     if answer != "OK" {
         ExitApp()
@@ -41,21 +55,51 @@ if !unattended {
 try FileDelete(resultsFile)
 DirCreate(workDir)
 try FileDelete(workDir . "\error.log")
-RunWait('"' . ahk . '" "' . A_ScriptDir . '\Unit.ahk" "' . resultsFile . '"')
+try FileDelete(workDir . "\error.old.log")
+for name in ["debug.log", "debug.old.log", "error.log", "error.old.log", "Unit.ini"] {
+    try FileDelete(A_ScriptDir . "\" . name)  ; NOTE: Unit.ahk is the main script there, so its logs land in tests\
+}
+
+; Unit, with a time limit, so an unattended run can't hang on it
+Run('"' . ahk . '" "' . A_ScriptDir . '\Unit.ahk" "' . resultsFile . '"', , , &unitPid)
+if ProcessWaitClose(unitPid, 120) {  ; NOTE: non-zero means it timed out
+    ProcessClose(unitPid)
+    Out("FAIL Unit.ahk did not finish within 120s")
+}
+if !FileExist(resultsFile) || !InStr(FileRead(resultsFile, "UTF-8"), "`nPASS Unit completed") {
+    Out("FAIL Unit did not complete")
+}
+if FileExist(A_ScriptDir . "\error.log") {
+    Out("FAIL tests\error.log was written during Unit:`n" . FileRead(A_ScriptDir . "\error.log"))
+}
 
 source := FileRead(scriptPath, "UTF-8")
-for mode in ["Raw", "Text", "Step"] {
-    copyPath := MakeTestCopy(source, mode)
+debugLog := workDir . "\debug.log"
+for pass in PASS_ORDER {
+    copyPath := MakeTestCopy(source, pass, PASS_SETTINGS[pass])
     if copyPath = "" {
         continue  ; MakeTestCopy already logged the FAIL
+    }
+    for name in ["debug.log", "debug.old.log"] {
+        try FileDelete(workDir . "\" . name)  ; NOTE: each pass checks only its own debug lines
+    }
+    Loop Files workDir . "\*.ini" {
+        try FileDelete(A_LoopFileFullPath)  ; NOTE: a stray saved-settings file must not change a pass
+    }
+    if pass = "Saved" {
+        ; NOTE: IniWrite on a new file makes it UTF-16, which the INI functions read; FileAppend "UTF-8" would not
+        savedIni := RegExReplace(copyPath, "\.ahk$", ".ini")
+        IniWrite(60, savedIni, "Settings", "KeyDelayMs")
+        IniWrite(20, savedIni, "Settings", "KeyPressMs")
+        IniWrite("Enter", savedIni, "Settings", "AfterTyping")
     }
     Run('"' . ahk . '" "' . A_ScriptDir . '\TestTarget.ahk" CT_Target 40', , , &targetPid)
     Run('"' . ahk . '" "' . A_ScriptDir . '\TestTarget.ahk" CT_Other 440', , , &otherPid)
     ; NOTE: started from System32 so the suite also covers an unwritable working dir
     Run('"' . ahk . '" "' . copyPath . '"', A_WinDir . "\System32", , &typerPid)
     Sleep(1000)
-    RunWait('"' . ahk . '" "' . A_ScriptDir . '\E2E.ahk" "' . resultsFile . '" ' . mode)
-    if withLeak && mode = "Raw" {
+    RunWait('"' . ahk . '" "' . A_ScriptDir . '\E2E.ahk" "' . resultsFile . '" ' . pass . ' "' . debugLog . '"')
+    if withLeak && pass = "Raw" {
         for method in ["activate", "click"] {
             RunWait('"' . ahk . '" "' . A_ScriptDir . '\LeakProbe.ahk" "' . resultsFile . '" ' . method . ' 5')
         }
@@ -73,26 +117,39 @@ if FileExist(workDir . "\error.log") {
     Out("PASS no error.log entries during the run")
 }
 
-results := FileRead(resultsFile, "UTF-8")
+results := "`n" . FileRead(resultsFile, "UTF-8")  ; NOTE: leading `n so a PASS or FAIL on line 1 is counted too
 StrReplace(results, "`nPASS ", , , &passes)
 StrReplace(results, "`nFAIL ", , , &fails)
 Out("== SUMMARY pass=" . passes . " fail=" . fails)
 Finish("Passed: " . passes . "   Failed: " . fails . "`n`nDetails: tests\results.txt", fails)
 
 
-; Writes a copy of the script for one test pass, with no startup notification. Returns its path, or "" on failure.
-; "Raw" and "Text" set SEND_MODE with step mode off; "Step" uses Raw with step mode on.
-MakeTestCopy(source, mode) {
-    sendMode := mode = "Step" ? "Raw" : mode
-    stepMode := mode = "Step" ? "true" : "false"
-    copy := RegExReplace(source, 'm)^SEND_MODE := "\w+"', 'SEND_MODE := "' . sendMode . '"', &modeHits)
-    copy := RegExReplace(copy, "m)^SHOW_STARTUP_TIP := \w+", "SHOW_STARTUP_TIP := false", &tipHits)
-    copy := RegExReplace(copy, "m)^STEP_MODE := \w+", "STEP_MODE := " . stepMode, &stepHits)
-    if modeHits != 1 || tipHits != 1 || stepHits != 1 {
-        Out("FAIL could not set SEND_MODE/SHOW_STARTUP_TIP/STEP_MODE in the test copy (settings lines renamed?)")
-        return ""
+; Writes a copy of the script for one test pass, with no startup notification and debug logging on.
+; Returns its path, or "" on failure. Every setting must match exactly once, so a renamed settings
+; line fails loudly instead of silently testing the defaults.
+MakeTestCopy(source, pass, settings) {
+    copy := source
+    fixed := Map("SHOW_STARTUP_TIP", "false", "DEBUG_LOG", "true", "SAVE_SETTINGS", "false", "AFTER_TYPING", '""',
+        "STEP_SELECT_ALL_FIRST", "true", "STOP_ON_KEYPRESS", "true")
+    for table in [fixed, settings] {  ; NOTE: the pass's own settings last, so they win (Saved turns SAVE_SETTINGS on)
+        for name, value in table {
+            copy := RegExReplace(copy, 'm)^' . name . ' := (?:"\w*"|\w+)', name . " := " . value, &hits)
+            if hits != 1 {
+                Out("FAIL could not set " . name . " in the " . pass . " test copy (settings line renamed?)")
+                return ""
+            }
+        }
     }
-    copyPath := workDir . "\ClipboardTyper.test-" . mode . ".ahk"
+    ; NOTE: test copies only: Ctrl+Shift+Alt+1..4 pick Fast, Normal, Slow and Very slow through the
+    ;       tray's own callback, so E2E can change the speed at runtime the way a user does
+    copy .= "`r`n`r`n; --- Added by RunTests.ahk (test copy only) ---`r`n"
+        . 'for i, key in ["1", "2", "3", "4"] {`r`n'
+        . '    Hotkey("^+!" . key, TestPickSpeed.Bind(i))`r`n'
+        . '}`r`n'
+        . 'TestPickSpeed(i, *) {`r`n'
+        . '    tray.OnSpeedPreset(tray._PresetLabel(TrayMenu.SPEED_PRESETS[i]))`r`n'
+        . '}`r`n'
+    copyPath := workDir . "\ClipboardTyper.test-" . pass . ".ahk"
     try FileDelete(copyPath)
     FileAppend(copy, copyPath, "UTF-8")
     return copyPath

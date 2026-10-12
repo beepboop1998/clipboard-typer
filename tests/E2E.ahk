@@ -4,15 +4,16 @@
                     and checks what lands in the TestTarget windows.
     Dependencies: a running ClipboardTyper, TestTarget windows "CT_Target" and "CT_Other"
     Author: reuben
-    Usage: E2E.ahk <results file> <label>   (started by RunTests.ahk; label "Step" runs the step-mode suite)
+    Usage: E2E.ahk <results file> <pass> <debug.log path>   (started by RunTests.ahk; the pass name picks the suite)
     NOTE: SendLevel 1 so ClipboardTyper's hook hotkeys (*~LButton, *Esc) treat this input like a person's.
-          Saves and restores the clipboard, mouse position and CapsLock state.
+          Saves and restores the clipboard, mouse position, CapsLock state and Shift.
 */
 #Requires AutoHotkey v2.0
 #SingleInstance Off
 
 resultsFile := A_Args[1]
 label := A_Args.Length >= 2 ? A_Args[2] : ""
+debugLog := A_Args.Length >= 3 ? A_Args[3] : ""  ; the typer copy's debug.log (DEBUG_LOG is on in every test copy)
 CoordMode("Mouse", "Screen")
 SendLevel(1)
 savedClip := ClipboardAll()
@@ -27,10 +28,19 @@ if !WinWait("CT_Target", , 5) || !WinWait("CT_Other", , 5) {
     ExitApp(1)
 }
 try {
-    if label = "Step" {
-        RunStepSuite()
-    } else {
-        RunSuite()
+    switch label {
+        case "Raw", "Text":
+            RunSuite()
+        case "Step":
+            RunStepSuite()
+        case "Enter":
+            RunEnterSuite()
+        case "StepEnter":
+            RunStepEnterSuite()
+        case "Saved":
+            RunSavedSuite()
+        default:
+            Check("known pass name", false, "no suite for pass '" . label . "'")
     }
 } catch Error as e {
     Out("FAIL harness error: " . e.Message . " (line " . e.Line . ")")
@@ -38,6 +48,7 @@ try {
 }
 A_Clipboard := savedClip
 SetCapsLockState(capsWasOn ? "On" : "Off")
+Send("{Blind}{LShift up}{RShift up}")  ; NOTE: a failed T12 must not leave Shift down for the next pass or the tester
 MouseMove(mouseX, mouseY, 0)
 Out("TOTAL " . label . " pass=" . passCount . " fail=" . failCount)
 ExitApp(failCount)
@@ -48,10 +59,39 @@ RunSuite() {
 
     ; T1 happy path: characters AHK treats specially, tab, CRLF, trailing CRLF dropped
     Clear()
+    mark := LogMark()
     Trigger("Hello {World}! ^+#`r`nline2`tTab @`"q`" ~%``;`r`n")
     ClickIn("CT_Target")
     got := WaitIdle("CT_Target")
     Check("T1 symbols/tab/newline typed exactly, trailing CRLF dropped", got == "Hello {World}! ^+#`r`nline2`tTab @`"q`" ~%``;", "got=" . Show(got))
+    Check("T1 debug log: stop=done", LogHas("DEBUG typed (\d+)/\1 ms=\d+ cps=\S+ stop=done", mark), LogTail(mark))
+    if speed := LogMatch("DEBUG typed (\d+)/\1 ms=(\d+) cps=(\S+) stop=done", mark) {
+        Out("INFO " . label . " pass speed at Normal: " . speed[3] . " chars/s (" . speed[1] . " chars in " . speed[2] . " ms)")
+    }
+
+    ; V1 each Speed preset, picked at runtime through the tray's own callback (test-only hotkeys
+    ;    Ctrl+Shift+Alt+1..4), types slower than the one before it; the same plain text every time
+    ladder := ""
+    last := 1000000
+    ordered := true
+    for key in ["1", "2", "3", "4"] {  ; Fast, Normal, Slow, Very slow
+        Send("^+!" . key)
+        Sleep(300)
+        Clear()
+        mark := LogMark()
+        Trigger("abcdefghijklmnopqrstuvwxyzabcd")
+        ClickIn("CT_Target")
+        got := WaitIdle("CT_Target")
+        speed := LogMatch("DEBUG typed 30/30 ms=\d+ cps=([\d.]+) stop=done", mark)
+        cps := speed ? speed[1] + 0 : -1
+        ordered := ordered && got == "abcdefghijklmnopqrstuvwxyzabcd" && cps > 0 && cps < last
+        last := cps
+        ladder .= (ladder = "" ? "" : " > ") . (speed ? speed[1] : "none")
+    }
+    Send("^+!2")  ; NOTE: back to Normal for the tests below
+    Sleep(300)
+    Check("V1 Fast > Normal > Slow > Very slow, picked from the tray at runtime", ordered, ladder . " chars/s")
+    Out("INFO " . label . " pass speed ladder (Fast > Normal > Slow > Very slow): " . ladder . " chars/s")
 
     ; T2 Esc cancels the wait, and a retry straight after works (notices don't block the hotkey)
     Clear()
@@ -70,25 +110,42 @@ RunSuite() {
 
     ; T3 a click inside the same window stops typing
     Clear()
+    mark := LogMark()
     Trigger(longText)
     ClickIn("CT_Target")
     Sleep(1200)
     ClickIn("CT_Target")
     got := WaitIdle("CT_Target")
     Check("T3 click during typing stops it", IsPartial(got, longText), StrLen(got) . "/80 chars")
+    Check("T3 debug log: stop=click", LogHas("DEBUG typed \d+/80 ms=\d+ cps=\S+ stop=click", mark), LogTail(mark))
 
     ; T4 Esc during typing stops it
     Clear()
+    mark := LogMark()
     Trigger(longText)
     ClickIn("CT_Target")
     Sleep(1200)
     Send("{Esc}")
     got := WaitIdle("CT_Target")
     Check("T4 Esc during typing stops it", IsPartial(got, longText), StrLen(got) . "/80 chars")
+    Check("T4 debug log: stop=esc", LogHas("DEBUG typed \d+/80 ms=\d+ cps=\S+ stop=esc", mark), LogTail(mark))
+
+    ; T14 a key pressed while it types stops it, and the key never reaches the field
+    ; NOTE: sent at SendLevel 2, which the key guard treats like a person's key (this file's level 1 is ignored)
+    Clear()
+    mark := LogMark()
+    Trigger(longText)
+    ClickIn("CT_Target")
+    Sleep(1200)
+    PressAsPerson("x")
+    got := WaitIdle("CT_Target")
+    Check("T14 a key press stops typing and is blocked", IsPartial(got, longText) && !InStr(got, "x")
+        && LogHas("DEBUG typed \d+/80 ms=\d+ cps=\S+ stop=key", mark), StrLen(got) . "/80 chars, got=" . Show(got) . "; " . LogTail(mark))
 
     ; T5 another window taking focus stops it
     ; NOTE: rarely one char can land in the other window (check-then-send race); LeakProbe.ahk measures the rate
     Clear()
+    mark := LogMark()
     Trigger(longText)
     ClickIn("CT_Target")
     Sleep(1200)
@@ -96,6 +153,7 @@ RunSuite() {
     got := WaitIdle("CT_Target")
     other := ControlGetText("Edit1", "CT_Other")
     Check("T5 focus loss stops it, other window untouched", IsPartial(got, longText) && other == "", StrLen(got) . "/80 chars, other=" . Show(other))
+    Check("T5 debug log: stop=focus", LogHas("DEBUG typed \d+/80 ms=\d+ cps=\S+ stop=focus", mark), LogTail(mark))
 
     ; T6 over the limit and empty clipboard type nothing
     Clear()
@@ -117,6 +175,28 @@ RunSuite() {
     got := WaitIdle("CT_Target")
     SetCapsLockState(capsWasOn ? "On" : "Off")
     Check("T7 CapsLock on, case preserved", got == "aB1!", "got=" . Show(got))
+
+    ; T12 a Shift held only in software is let go when a run ends.
+    ; NOTE: the run types nothing (Esc during the wait): a run that types can't test this, because
+    ;       AutoHotkey's own Send already lets go of a modifier another process holds only in software.
+    mark := LogMark()
+    try {
+        Send("{LShift down}")
+        Trigger("abc")
+        Send("{Esc}")  ; NOTE: the wildcard *Esc still fires with Shift down
+        Sleep(500)
+        Check("T12 a software-held LShift is released after a run", !GetKeyState("LShift") && LogHas("DEBUG release key=LShift", mark), "LShift " . (GetKeyState("LShift") ? "down" : "up") . "; " . LogTail(mark))
+    } finally {
+        Send("{LShift up}")
+    }
+
+    ; T13 the typed text never reaches the logs
+    Clear()
+    Trigger("zqSECRET7731")
+    ClickIn("CT_Target")
+    got := WaitIdle("CT_Target")
+    leaked := InStr(ReadIfExists(debugLog), "zqSECRET") || InStr(ReadIfExists(RegExReplace(debugLog, "debug\.log$", "error.log")), "zqSECRET")
+    Check("T13 typed text never appears in debug.log or error.log", got == "zqSECRET7731" && !leaked, "got=" . Show(got) . (leaked ? ", LEAKED into a log" : ""))
 
     ; T8 no click: times out, then a late click types nothing
     Clear()
@@ -167,6 +247,142 @@ RunStepSuite() {
     SetClip("")
     got := StepPress()
     Check("S8 empty clipboard types nothing", got == "", "got=" . Show(got))
+
+    ; S10 a focus change stops a step line; the list stays on it and the next press retypes it whole
+    longLine := Repeat("abcdefghij", 8)
+    Clear()
+    mark := LogMark()
+    StartStepLine(longLine . "`r`nnext")
+    WinActivate("CT_Other")
+    got := WaitIdle("CT_Target")
+    other := ControlGetText("Edit1", "CT_Other")
+    Check("S10 focus change stops a step line", IsPartial(got, longLine) && other == "" && LogHas("DEBUG step line=1/2 len=80 result=stopped stop=focus", mark), StrLen(got) . "/80 chars, other=" . Show(other) . "; " . LogTail(mark))
+    got := StepPress()
+    Check("S10 the next press retypes the stopped line whole", got == longLine, StrLen(got) . "/80 chars")
+    got := StepPress()
+    Check("S10 then the list moves on", got == "next", "got=" . Show(got))
+
+    ; S10b Esc stops a step line (and is swallowed, so it can't reach the app)
+    Clear()
+    mark := LogMark()
+    StartStepLine(longLine . "`r`nnext again")
+    Send("{Esc}")
+    got := WaitIdle("CT_Target")
+    Check("S10b Esc stops a step line", IsPartial(got, longLine) && LogHas("DEBUG step line=1/2 len=80 result=stopped stop=esc", mark), StrLen(got) . "/80 chars; " . LogTail(mark))
+
+    ; S10c a click in the field stops a step line, as in a full run
+    Clear()
+    mark := LogMark()
+    StartStepLine(longLine . "`r`nnext c")
+    ClickIn("CT_Target")
+    got := WaitIdle("CT_Target")
+    Check("S10c a click stops a step line", IsPartial(got, longLine) && LogHas("DEBUG step line=1/2 len=80 result=stopped stop=click", mark), StrLen(got) . "/80 chars; " . LogTail(mark))
+
+    ; S10d a key press stops a step line, and the key never reaches the field
+    Clear()
+    mark := LogMark()
+    StartStepLine(longLine . "`r`nnext d")
+    PressAsPerson("x")
+    got := WaitIdle("CT_Target")
+    Check("S10d a key press stops a step line and is blocked", IsPartial(got, longLine) && !InStr(got, "x")
+        && LogHas("DEBUG step line=1/2 len=80 result=stopped stop=key", mark), StrLen(got) . "/80 chars, got=" . Show(got) . "; " . LogTail(mark))
+
+    ; S12 a step press is logged as a result, and the line itself never reaches the logs
+    Clear()
+    mark := LogMark()
+    SetClip("zqSECRET7731")
+    got := StepPress()
+    leaked := InStr(ReadIfExists(debugLog), "zqSECRET") || InStr(ReadIfExists(RegExReplace(debugLog, "debug\.log$", "error.log")), "zqSECRET")
+    Check("S12 step line typed and logged, text never in debug.log or error.log"
+        , got == "zqSECRET7731" && !leaked && LogHas("DEBUG step line=1/1 len=12 result=typed", mark)
+        , "got=" . Show(got) . (leaked ? ", LEAKED into a log" : "") . "; " . LogTail(mark))
+}
+
+; The "Enter" pass runs the typer with AFTER_TYPING := "Enter".
+RunEnterSuite() {
+    longText := Repeat("abcdefghij", 8)
+
+    ; T9 Enter follows a run that typed everything (the test Edit is multi-line, so Enter adds `r`n)
+    Clear()
+    mark := LogMark()
+    Trigger("abc")
+    ClickIn("CT_Target")
+    got := WaitIdle("CT_Target")
+    Check("T9 Enter follows a completed run", got == "abc`r`n" && LogHas("DEBUG after key=Enter result=sent", mark), "got=" . Show(got) . "; " . LogTail(mark))
+
+    ; T10 no Enter after a run stopped with Esc
+    Clear()
+    mark := LogMark()
+    Trigger(longText)
+    ClickIn("CT_Target")
+    Sleep(1200)
+    Send("{Esc}")
+    got := WaitIdle("CT_Target")
+    Check("T10 a run stopped with Esc gets no Enter", IsPartial(got, longText) && LogHas("DEBUG typed \d+/80 .*stop=esc", mark)
+        && LogCount("DEBUG after key=Enter result=skipped-stopped", mark) = 1 && !LogHas("result=sent", mark), StrLen(got) . "/80 chars; " . LogTail(mark))
+}
+
+; The "StepEnter" pass runs the typer with STEP_MODE := true and AFTER_TYPING := "Enter".
+RunStepEnterSuite() {
+    longLine := Repeat("abcdefghij", 8)
+
+    ; S9 each press types its line, then Enter; the next press replaces both
+    Clear()
+    SetClip("alpha`r`nbeta+1")
+    got1 := StepPress()
+    got2 := StepPress()
+    Check("S9 each step press types its line then Enter", got1 == "alpha`r`n" && got2 == "beta+1`r`n", Show(got1) . " / " . Show(got2))
+
+    ; S11 a stopped step line gets no Enter, and neither does its retyped version
+    Clear()
+    mark := LogMark()
+    StartStepLine(longLine . "`r`nnext")
+    WinActivate("CT_Other")
+    got := WaitIdle("CT_Target")
+    other := ControlGetText("Edit1", "CT_Other")
+    Check("S11 a stopped step line gets no Enter", IsPartial(got, longLine) && other == "" && LogCount("DEBUG after key=Enter result=skipped-stopped", mark) = 1, StrLen(got) . "/80 chars, other=" . Show(other) . "; " . LogTail(mark))
+    got := StepPress()
+    Check("S11 the retyped line gets no Enter either", got == longLine && LogHas("DEBUG after key=Enter result=skipped-retry", mark), "got " . StrLen(got) . " chars" . (InStr(got, "`n") ? " with a line break" : "") . "; " . LogTail(mark))
+}
+
+; The "Saved" pass starts the typer with SAVE_SETTINGS on and a saved .ini (written by RunTests):
+; KeyDelayMs=60, KeyPressMs=20, AfterTyping=Enter. The script itself says 20/10 and no key.
+RunSavedSuite() {
+    ; P1 saved settings win over the script's: the start line shows the saved speed, and Enter follows the text
+    Clear()
+    Trigger("abc")
+    ClickIn("CT_Target")
+    got := WaitIdle("CT_Target")
+    Check("P1 saved After typing: Enter applies", got == "abc`r`n", "got=" . Show(got))
+    Check("P1 saved speed applies", LogHas("DEBUG start .* delay=60 press=20 source=ini"), LogTail())
+}
+
+; Presses a key at SendLevel 2: the typer's key guard ignores levels 0 and 1 (its own keys and this file's), so
+; this is how a person's key press looks to it.
+PressAsPerson(key) {
+    SendLevel(2)
+    Send(key)
+    SendLevel(1)
+}
+
+; Copies the list, presses the hotkey in the target field, and returns once the first line has started typing.
+StartStepLine(listText) {
+    SetClip(listText)
+    Sleep(300)  ; NOTE: extra time for the clipboard change to register before the press
+    WinActivate("CT_Target")
+    WinWaitActive("CT_Target", , 2)
+    ControlFocus("Edit1", "CT_Target")
+    Send("^+!v")
+    WaitForTyping("CT_Target")
+}
+
+; Waits (up to 5s) until the field has some text, so a stop lands mid-line however late the hotkey fires.
+WaitForTyping(winTitle) {
+    start := A_TickCount
+    while ControlGetText("Edit1", winTitle) == "" && A_TickCount - start < 5000 {
+        Sleep(50)
+    }
+    Sleep(300)
 }
 
 ; Focuses the target field, presses the hotkey once, and returns the field's text when typing has settled.
@@ -235,6 +451,64 @@ Repeat(text, count) {
         result .= text
     }
     return result
+}
+
+; --- Debug log helpers (the typer copy writes debug.log; tooltips can't be read from another process) ---
+; Number of complete lines in debug.log now; pass it to LogHas to look only at what comes after.
+LogMark() {
+    StrReplace(ReadIfExists(debugLog), "`n", "`n", , &count)
+    return count
+}
+
+; True when a line after mark matches the regex. False when debug.log is missing, so that check fails
+; and the rest still run.
+LogHas(pattern, mark := 0) {
+    for line in StrSplit(ReadIfExists(debugLog), "`n", "`r") {
+        if A_Index > mark && RegExMatch(line, pattern) {
+            return true
+        }
+    }
+    return false
+}
+
+; How many lines after mark match the regex (0 when debug.log is missing).
+LogCount(pattern, mark := 0) {
+    count := 0
+    for line in StrSplit(ReadIfExists(debugLog), "`n", "`r") {
+        if A_Index > mark && RegExMatch(line, pattern) {
+            count += 1
+        }
+    }
+    return count
+}
+
+; The first match after mark (a RegExMatch object), or "" when none.
+LogMatch(pattern, mark := 0) {
+    for line in StrSplit(ReadIfExists(debugLog), "`n", "`r") {
+        if A_Index > mark && RegExMatch(line, pattern, &match) {
+            return match
+        }
+    }
+    return ""
+}
+
+; The debug lines after mark, for a FAIL line's details.
+LogTail(mark := 0) {
+    tail := ""
+    for line in StrSplit(ReadIfExists(debugLog), "`n", "`r") {
+        if A_Index > mark && line != "" {
+            tail .= " / " . RegExReplace(line, "^\S+ \S+ DEBUG ")
+        }
+    }
+    return "log:" . (tail = "" ? " (nothing)" : tail)
+}
+
+ReadIfExists(path) {
+    try {
+        return FileExist(path) ? FileRead(path) : ""
+    } catch {
+        return ""  ; NOTE: the typer may be appending right now; the check reads again next time
+    }
 }
 
 Show(text) {
